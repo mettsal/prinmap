@@ -47,3 +47,11 @@ export type GenerateParams = {
   detail: number; // 0..1
   road_width: number;
 };
+
+// Terrain relief for the STL export only — never affects the SVG endpoint.
+export type TerrainParams = {
+  include: boolean;
+  resolution_m: number;
+  base_thickness_m: number;
+  exaggeration: number; // vertical scale on relief only, not building heights
+};

@@ -7,6 +7,7 @@ import type {
   MapPreset,
   MeshStatus,
   StylePreset,
+  TerrainParams,
 } from "../types";
 
 type Props = {
@@ -18,6 +19,7 @@ type Props = {
   params: GenerateParams;
   generation: GenerationState;
   meshStatus: MeshStatus;
+  terrainParams: TerrainParams;
   onToggleSelect: () => void;
   onClear: () => void;
   onMapPreset: (p: MapPreset) => void;
@@ -25,6 +27,7 @@ type Props = {
   onFeaturesToggle: (f: FabricFeature) => void;
   onParams: (p: GenerateParams) => void;
   onGenerate: () => void;
+  onTerrainParams: (t: TerrainParams) => void;
   onExportMesh: () => void;
 };
 
@@ -44,6 +47,7 @@ export default function Controls(props: Props) {
     params,
     generation,
     meshStatus,
+    terrainParams,
     onToggleSelect,
     onClear,
     onMapPreset,
@@ -51,6 +55,7 @@ export default function Controls(props: Props) {
     onFeaturesToggle,
     onParams,
     onGenerate,
+    onTerrainParams,
     onExportMesh,
   } = props;
 
@@ -171,12 +176,57 @@ export default function Controls(props: Props) {
 
       <section className="control-block">
         <h2>3D export</h2>
+
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={terrainParams.include}
+            onChange={(e) => onTerrainParams({ ...terrainParams, include: e.target.checked })}
+          />
+          Include terrain relief + solid base
+        </label>
+
+        {terrainParams.include && (
+          <>
+            <label className="slider">
+              Base thickness{" "}
+              <span className="muted">{terrainParams.base_thickness_m.toFixed(1)} m</span>
+              <input
+                type="range"
+                min={1}
+                max={15}
+                step={0.5}
+                value={terrainParams.base_thickness_m}
+                onChange={(e) =>
+                  onTerrainParams({ ...terrainParams, base_thickness_m: Number(e.target.value) })
+                }
+              />
+            </label>
+
+            <label className="slider">
+              Vertical exaggeration{" "}
+              <span className="muted">{terrainParams.exaggeration.toFixed(1)}×</span>
+              <input
+                type="range"
+                min={1}
+                max={5}
+                step={0.1}
+                value={terrainParams.exaggeration}
+                onChange={(e) =>
+                  onTerrainParams({ ...terrainParams, exaggeration: Number(e.target.value) })
+                }
+              />
+            </label>
+          </>
+        )}
+
         <button onClick={onExportMesh} disabled={!selection || meshBusy}>
           {meshBusy ? "Extruding buildings…" : "Export 3D model (STL)"}
         </button>
         <p className="readout muted">
-          Extrudes OSM building footprints by height (default ~9 m when
-          unknown) onto a flat ground plane — ready for Rhino/Blender/slicing.
+          {terrainParams.include
+            ? "Extrudes OSM building footprints (default ~9 m when unknown), fused onto real terrain relief with a solid flat base — ready to slice/print as one piece."
+            : "Extrudes OSM building footprints (default ~9 m when unknown) onto a flat ground plane, no terrain — faster, network-lighter."}
         </p>
         {meshStatus.status === "error" && (
           <p className="status status-error">Error: {meshStatus.message}</p>

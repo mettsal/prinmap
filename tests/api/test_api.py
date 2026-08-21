@@ -7,7 +7,7 @@ from app.main import app
 from app.service import generate_fabric, generate_mesh
 from fastapi.testclient import TestClient
 
-from ..fixtures import BBOX, FakeProvider
+from ..fixtures import BBOX, FakeElevationProvider, FakeProvider
 
 client = TestClient(app)
 
@@ -67,13 +67,57 @@ def test_generate_with_buildings_and_blocks_layers(monkeypatch):
     assert '<g id="roads">' in svg
 
 
-def test_generate_mesh_returns_binary_stl(monkeypatch):
-    monkeypatch.setattr(main_module, "generate_mesh", lambda req: generate_mesh(req, provider=FakeProvider()))
+def _mesh_stl_triangle_count(body: bytes) -> int:
+    return struct.unpack("<I", body[80:84])[0]
+
+
+def test_generate_mesh_with_terrain_returns_binary_stl(monkeypatch):
+    # terrain.include defaults to True — must inject a FakeElevationProvider
+    # so this never touches the real network.
+    monkeypatch.setattr(
+        main_module,
+        "generate_mesh",
+        lambda req: generate_mesh(req, provider=FakeProvider(), elevation_provider=FakeElevationProvider(base_elevation=15.0)),
+    )
     resp = client.post("/api/v1/generate/mesh", json={"selection": {"type": "bbox", **BBOX}})
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"] == "model/stl"
     body = resp.content
     assert len(body) > 84
-    triangle_count = struct.unpack("<I", body[80:84])[0]
+    triangle_count = _mesh_stl_triangle_count(body)
     assert triangle_count > 0
     assert len(body) == 84 + triangle_count * 50
+
+
+def test_generate_mesh_without_terrain_still_works(monkeypatch):
+    # terrain.include=False must never call the elevation provider — passing
+    # None here proves it, since a None.elevations() call would crash.
+    monkeypatch.setattr(
+        main_module,
+        "generate_mesh",
+        lambda req: generate_mesh(req, provider=FakeProvider(), elevation_provider=None),
+    )
+    resp = client.post(
+        "/api/v1/generate/mesh",
+        json={"selection": {"type": "bbox", **BBOX}, "terrain": {"include": False}},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.content
+    assert _mesh_stl_triangle_count(body) > 0
+
+
+def test_generate_mesh_terrain_adds_triangles_over_flat_baseline(monkeypatch):
+    def _generate(req):
+        return generate_mesh(req, provider=FakeProvider(), elevation_provider=FakeElevationProvider(base_elevation=15.0))
+
+    monkeypatch.setattr(main_module, "generate_mesh", _generate)
+
+    flat_resp = client.post(
+        "/api/v1/generate/mesh",
+        json={"selection": {"type": "bbox", **BBOX}, "terrain": {"include": False}},
+    )
+    terrain_resp = client.post(
+        "/api/v1/generate/mesh",
+        json={"selection": {"type": "bbox", **BBOX}, "terrain": {"include": True}},
+    )
+    assert _mesh_stl_triangle_count(terrain_resp.content) > _mesh_stl_triangle_count(flat_resp.content)

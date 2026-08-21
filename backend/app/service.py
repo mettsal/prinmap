@@ -10,9 +10,11 @@ import uuid
 
 from .config import settings
 from .errors import empty_geometry, invalid_selection, selection_too_large
-from .geometry.extrude import build_scene_mesh
+from .geometry.extrude import build_scene_mesh, build_scene_mesh_with_base
+from .geometry.mesh_utils import merge_meshes
 from .geometry.processing import process_fabric
 from .geometry.projection import projection_for
+from .geometry.terrain import building_base_z, build_terrain_mesh, sample_elevation_grid
 from .models.schemas import (
     BBoxSelection,
     GenerateMeshRequest,
@@ -20,6 +22,7 @@ from .models.schemas import (
     GenerateResponse,
 )
 from .providers.base import GeographicDataProvider
+from .providers.elevation import ElevationProvider, TerrariumElevationProvider
 from .providers.osm import DEFAULT_ROAD_CLASSES, OSMProvider
 from .rendering.stl import write_stl_binary
 from .rendering.styles import get_style
@@ -125,11 +128,14 @@ def generate_fabric(
 def generate_mesh(
     request: GenerateMeshRequest,
     provider: GeographicDataProvider | None = None,
+    elevation_provider: ElevationProvider | None = None,
 ) -> bytes:
     """Fetch building footprints and extrude them into a watertight STL mesh.
 
-    Buildings sit on a flat z=0 ground plane — terrain relief isn't drapped in
-    yet (see AGENTS.md).
+    When `terrain.include` (default True), buildings are seated on real
+    ground elevation and fused onto a solid terrain slab with a flat bottom
+    (printable as one piece). When False, buildings sit on a flat z=0 plane
+    with no terrain fetch (faster, network-lighter iteration path).
     """
     bbox = request.selection
     _validate_bbox(bbox)
@@ -152,7 +158,29 @@ def generate_mesh(
             "The selected buildings produced no extrudable mesh at this detail level."
         )
 
-    vertices, faces = build_scene_mesh(processed.buildings_3d)
+    if not request.terrain.include:
+        vertices, faces = build_scene_mesh(processed.buildings_3d)
+        if len(faces) == 0:
+            raise empty_geometry("Mesh extrusion produced no triangles.")
+        return write_stl_binary(vertices, faces)
+
+    elevation_provider = elevation_provider or TerrariumElevationProvider()
+    grid = sample_elevation_grid(
+        processed.frame.bounds,
+        processed.projection,
+        elevation_provider,
+        request.terrain.resolution_m,
+        request.terrain.exaggeration,
+    )
+    terrain_mesh = build_terrain_mesh(grid, request.terrain.base_thickness_m)
+
+    seated_buildings = [
+        (footprint, height, building_base_z(footprint, grid, request.terrain.base_thickness_m))
+        for footprint, height in processed.buildings_3d
+    ]
+    buildings_mesh = build_scene_mesh_with_base(seated_buildings)
+
+    vertices, faces = merge_meshes([terrain_mesh, buildings_mesh])
     if len(faces) == 0:
         raise empty_geometry("Mesh extrusion produced no triangles.")
 

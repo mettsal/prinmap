@@ -5,6 +5,7 @@ Used so the geometry/rendering/api tests never touch the network (DESIGN.md §37
 
 from __future__ import annotations
 
+import numpy as np
 from shapely.geometry import LineString, Polygon
 
 from app.providers.base import (
@@ -72,3 +73,19 @@ class FakeProvider:
 
     def fetch_buildings(self, west, south, east, north):
         return building_feature_set()
+
+
+class FakeElevationProvider:
+    """An ElevationProvider with a flat or east-west-sloped synthetic surface,
+    no network. `slope_m_per_deg_lon` is metres of rise per degree of
+    longitude, applied relative to the fixture bbox's west edge — small but
+    nonzero over BBOX's ~0.02 degree span so tests can see real variation.
+    """
+
+    def __init__(self, base_elevation: float = 0.0, slope_m_per_deg_lon: float = 0.0):
+        self.base_elevation = base_elevation
+        self.slope_m_per_deg_lon = slope_m_per_deg_lon
+
+    def elevations(self, lons: np.ndarray, lats: np.ndarray) -> np.ndarray:
+        lons = np.asarray(lons, dtype=np.float64)
+        return self.base_elevation + self.slope_m_per_deg_lon * (lons - BBOX["west"])

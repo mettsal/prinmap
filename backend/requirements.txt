@@ -6,3 +6,4 @@ pyproj>=3.6
 requests>=2.31
 numpy>=1.26
 mapbox-earcut>=1.0
+Pillow>=10.0

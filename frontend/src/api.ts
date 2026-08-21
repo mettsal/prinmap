@@ -5,6 +5,7 @@ import type {
   GenerateResponse,
   GeocodeResult,
   StylePreset,
+  TerrainParams,
 } from "./types";
 
 const BASE = "/api/v1";
@@ -46,6 +47,7 @@ export async function generateFabric(args: {
 export async function generateMesh(
   selection: BBoxSelection,
   params: GenerateParams,
+  terrain: TerrainParams,
 ): Promise<Blob> {
   const res = await fetch(`${BASE}/generate/mesh`, {
     method: "POST",
@@ -54,6 +56,7 @@ export async function generateMesh(
       selection,
       source: { provider: "osm" },
       parameters: params,
+      terrain,
     }),
   });
   if (!res.ok) throw await toError(res);

@@ -12,6 +12,7 @@ import type {
   MapPreset,
   MeshStatus,
   StylePreset,
+  TerrainParams,
 } from "./types";
 
 type FlyTarget =
@@ -42,6 +43,12 @@ export default function App() {
     status: "idle",
   });
   const [meshStatus, setMeshStatus] = useState<MeshStatus>({ status: "idle" });
+  const [terrainParams, setTerrainParams] = useState<TerrainParams>({
+    include: true,
+    resolution_m: 10,
+    base_thickness_m: 3,
+    exaggeration: 1,
+  });
   const [flyTarget, setFlyTarget] = useState<FlyTarget>(null);
 
   async function generate() {
@@ -66,7 +73,7 @@ export default function App() {
     if (!selection) return;
     setMeshStatus({ status: "exporting" });
     try {
-      const blob = await generateMesh(selection, params);
+      const blob = await generateMesh(selection, params, terrainParams);
       downloadBlob(blob, "urban-fabric.stl");
       setMeshStatus({ status: "idle" });
     } catch (e) {
@@ -117,6 +124,7 @@ export default function App() {
             params={params}
             generation={generation}
             meshStatus={meshStatus}
+            terrainParams={terrainParams}
             onToggleSelect={() => setSelecting((v) => !v)}
             onClear={() => {
               setSelection(null);
@@ -127,6 +135,7 @@ export default function App() {
             onFeaturesToggle={toggleFeature}
             onParams={setParams}
             onGenerate={generate}
+            onTerrainParams={setTerrainParams}
             onExportMesh={exportMesh}
           />
         </aside>

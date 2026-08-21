@@ -60,12 +60,22 @@ class GenerateRequest(BaseModel):
     parameters: Parameters = Field(default_factory=Parameters)
 
 
+class TerrainParameters(BaseModel):
+    """Terrain relief for the STL export only — never affects the SVG endpoint."""
+
+    include: bool = True
+    resolution_m: float = 10.0  # elevation-grid spacing; may be silently coarsened, see geometry/terrain.py
+    base_thickness_m: float = 3.0  # solid plinth thickness below the lowest sampled terrain point
+    exaggeration: float = 1.0  # vertical scale on terrain relief only (not building heights)
+
+
 class GenerateMeshRequest(BaseModel):
     """Input for the 3D building-mesh (STL) export — always buildings-only."""
 
     selection: BBoxSelection
     source: Source = Field(default_factory=Source)
     parameters: Parameters = Field(default_factory=Parameters)
+    terrain: TerrainParameters = Field(default_factory=TerrainParameters)
 
 
 # --------------------------------------------------------------------------- #

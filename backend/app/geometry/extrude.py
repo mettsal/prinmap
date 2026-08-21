@@ -1,13 +1,14 @@
-"""3D mesh extrusion of building footprints (glTF/OBJ/STL export — see AGENTS.md).
+"""3D mesh extrusion of building footprints (STL export — see AGENTS.md).
 
 Each building footprint becomes a closed, watertight triangular prism: a
-triangulated roof at z=height, a triangulated floor at z=0 (reversed winding),
-and wall quads connecting every ring (exterior + holes/courtyards) between the
-two. Footprints are triangulated with `mapbox_earcut`, which handles holes
-directly — important for buildings with internal courtyards.
+triangulated roof at z=base_z+height, a triangulated floor at z=base_z
+(reversed winding), and wall quads connecting every ring (exterior +
+holes/courtyards) between the two. Footprints are triangulated with
+`mapbox_earcut`, which handles holes directly — important for buildings with
+internal courtyards.
 
-Terrain relief (draping onto a DEM) is not implemented yet — buildings sit on a
-flat z=0 ground plane. See AGENTS.md for the plan to add it via a DEM source.
+`base_z` lets a building be seated on terrain relief (see geometry/terrain.py)
+instead of a flat z=0 ground plane.
 """
 
 from __future__ import annotations
@@ -18,6 +19,8 @@ import mapbox_earcut as earcut
 import numpy as np
 from shapely.geometry import Polygon
 from shapely.geometry.polygon import orient
+
+from .mesh_utils import MeshPart, merge_meshes
 
 
 def _triangulate_footprint(polygon: Polygon) -> tuple[np.ndarray, np.ndarray]:
@@ -81,29 +84,29 @@ def extrude_polygon(
     return vertices, np.array(faces, dtype=np.uint32)
 
 
-def build_scene_mesh(
-    buildings: Iterable[tuple[Polygon, float]],
-) -> tuple[np.ndarray, np.ndarray]:
-    """Concatenate every building's mesh into one (vertices, faces) pair.
+def build_scene_mesh(buildings: Iterable[tuple[Polygon, float]]) -> MeshPart:
+    """Concatenate every building's mesh into one (vertices, faces) pair, each
+    seated on a flat z=0 ground plane. See `build_scene_mesh_with_base` for
+    buildings seated on terrain relief.
+    """
+    return build_scene_mesh_with_base((polygon, height, 0.0) for polygon, height in buildings)
+
+
+def build_scene_mesh_with_base(
+    buildings: Iterable[tuple[Polygon, float, float]],
+) -> MeshPart:
+    """Concatenate every building's mesh into one (vertices, faces) pair, each
+    seated at its own `base_z` (e.g. terrain elevation sampled under its
+    footprint — see geometry/terrain.py::building_base_z).
 
     Buildings are independent watertight solids sharing one vertex/face buffer
     — valid for STL (which has no shared-solid concept) and fine for slicing/
     printing a whole block as one file.
     """
-    all_verts: list[np.ndarray] = []
-    all_faces: list[np.ndarray] = []
-    offset = 0
-    for polygon, height in buildings:
+    parts: list[MeshPart] = []
+    for polygon, height, base_z in buildings:
         try:
-            verts, faces = extrude_polygon(polygon, height)
+            parts.append(extrude_polygon(polygon, height, base_z=base_z))
         except Exception:
             continue  # skip a degenerate footprint rather than fail the whole export
-        if len(verts) == 0 or len(faces) == 0:
-            continue
-        all_verts.append(verts)
-        all_faces.append(faces + offset)
-        offset += len(verts)
-
-    if not all_verts:
-        return np.empty((0, 3)), np.empty((0, 3), dtype=np.uint32)
-    return np.vstack(all_verts), np.vstack(all_faces)
+    return merge_meshes(parts)

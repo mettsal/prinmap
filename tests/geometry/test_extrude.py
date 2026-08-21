@@ -1,22 +1,10 @@
 from __future__ import annotations
 
-from collections import Counter
-
 from shapely.geometry import Polygon
 
 from app.geometry.extrude import build_scene_mesh, extrude_polygon
 
-
-def _euler_characteristic(vertices, faces) -> tuple[int, bool]:
-    """Return (V - E + F, is_watertight). Watertight iff every edge borders
-    exactly two triangles."""
-    edge_counts: Counter = Counter()
-    for tri in faces:
-        for a, b in zip(tri, list(tri[1:]) + [tri[0]]):
-            edge_counts[frozenset((int(a), int(b)))] += 1
-    watertight = all(c == 2 for c in edge_counts.values())
-    euler = len(vertices) - len(edge_counts) + len(faces)
-    return euler, watertight
+from .euler import euler_characteristic as _euler_characteristic
 
 
 def test_simple_rectangle_is_watertight_genus_zero():
