@@ -3,12 +3,14 @@ import MapView from "./map/MapView";
 import Controls from "./generation/Controls";
 import Preview from "./generation/Preview";
 import SearchBar from "./components/SearchBar";
-import { generateFabric } from "./api";
+import { generateFabric, generateMesh } from "./api";
 import type {
   BBoxSelection,
+  FabricFeature,
   GenerateParams,
   GenerationState,
   MapPreset,
+  MeshStatus,
   StylePreset,
 } from "./types";
 
@@ -17,9 +19,19 @@ type FlyTarget =
   | { kind: "center"; center: [number, number]; zoom?: number }
   | null;
 
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function App() {
   const [mapPreset, setMapPreset] = useState<MapPreset>("dark");
   const [outputStyle, setOutputStyle] = useState<StylePreset>("dark-minimal");
+  const [features, setFeatures] = useState<FabricFeature[]>(["roads"]);
   const [selecting, setSelecting] = useState(false);
   const [selection, setSelection] = useState<BBoxSelection | null>(null);
   const [params, setParams] = useState<GenerateParams>({
@@ -29,17 +41,14 @@ export default function App() {
   const [generation, setGeneration] = useState<GenerationState>({
     status: "idle",
   });
+  const [meshStatus, setMeshStatus] = useState<MeshStatus>({ status: "idle" });
   const [flyTarget, setFlyTarget] = useState<FlyTarget>(null);
 
   async function generate() {
-    if (!selection) return;
+    if (!selection || features.length === 0) return;
     setGeneration({ status: "generating" });
     try {
-      const res = await generateFabric({
-        selection,
-        style: outputStyle,
-        params,
-      });
+      const res = await generateFabric({ selection, features, style: outputStyle, params });
       setGeneration({
         status: "success",
         svg: res.svg,
@@ -51,6 +60,29 @@ export default function App() {
         message: e instanceof Error ? e.message : "Generation failed",
       });
     }
+  }
+
+  async function exportMesh() {
+    if (!selection) return;
+    setMeshStatus({ status: "exporting" });
+    try {
+      const blob = await generateMesh(selection, params);
+      downloadBlob(blob, "urban-fabric.stl");
+      setMeshStatus({ status: "idle" });
+    } catch (e) {
+      setMeshStatus({
+        status: "error",
+        message: e instanceof Error ? e.message : "Mesh export failed",
+      });
+    }
+  }
+
+  function toggleFeature(f: FabricFeature) {
+    setFeatures((prev) => {
+      const has = prev.includes(f);
+      if (has && prev.length === 1) return prev; // keep at least one layer selected
+      return has ? prev.filter((x) => x !== f) : [...prev, f];
+    });
   }
 
   return (
@@ -81,8 +113,10 @@ export default function App() {
             selection={selection}
             mapPreset={mapPreset}
             outputStyle={outputStyle}
+            features={features}
             params={params}
             generation={generation}
+            meshStatus={meshStatus}
             onToggleSelect={() => setSelecting((v) => !v)}
             onClear={() => {
               setSelection(null);
@@ -90,8 +124,10 @@ export default function App() {
             }}
             onMapPreset={setMapPreset}
             onOutputStyle={setOutputStyle}
+            onFeaturesToggle={toggleFeature}
             onParams={setParams}
             onGenerate={generate}
+            onExportMesh={exportMesh}
           />
         </aside>
 

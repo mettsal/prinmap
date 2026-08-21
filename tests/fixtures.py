@@ -1,13 +1,18 @@
-"""Synthetic geometry fixtures — a tiny grid of roads near São Paulo.
+"""Synthetic geometry fixtures — a tiny grid of roads + buildings near São Paulo.
 
 Used so the geometry/rendering/api tests never touch the network (DESIGN.md §37).
 """
 
 from __future__ import annotations
 
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Polygon
 
-from app.providers.base import GeographicFeatureSet, RoadFeature
+from app.providers.base import (
+    BuildingFeature,
+    BuildingFeatureSet,
+    GeographicFeatureSet,
+    RoadFeature,
+)
 
 # A small bbox in central São Paulo.
 BBOX = {"west": -46.650, "south": -23.570, "east": -46.630, "north": -23.550}
@@ -34,8 +39,36 @@ def grid_feature_set() -> GeographicFeatureSet:
     return GeographicFeatureSet(features=features)
 
 
+def building_feature_set() -> BuildingFeatureSet:
+    """Four small buildings, one per quadrant of the road grid, distinct heights."""
+    w, s, e, n = BBOX["west"], BBOX["south"], BBOX["east"], BBOX["north"]
+    dx, dy = (e - w), (n - s)
+    fracs = (0.35, 0.65)  # midpoints between the 0.2/0.5/0.8 road lines
+    heights = {(0, 0): 9.0, (0, 1): 15.0, (1, 0): 30.0, (1, 1): 6.0}
+    half_w, half_h = dx * 0.08, dy * 0.08
+
+    buildings: list[BuildingFeature] = []
+    for i, fy in enumerate(fracs):
+        for j, fx in enumerate(fracs):
+            cx, cy = w + dx * fx, s + dy * fy
+            ring = [
+                (cx - half_w, cy - half_h),
+                (cx + half_w, cy - half_h),
+                (cx + half_w, cy + half_h),
+                (cx - half_w, cy + half_h),
+                (cx - half_w, cy - half_h),
+            ]
+            buildings.append(
+                BuildingFeature(Polygon(ring), height_m=heights[(i, j)], name=f"b{i}{j}")
+            )
+    return BuildingFeatureSet(features=buildings)
+
+
 class FakeProvider:
-    """A GeographicDataProvider that returns the synthetic grid without a network."""
+    """A GeographicDataProvider that returns synthetic fixtures without a network."""
 
     def fetch_roads(self, west, south, east, north, road_classes):
         return grid_feature_set()
+
+    def fetch_buildings(self, west, south, east, north):
+        return building_feature_set()

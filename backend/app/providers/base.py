@@ -30,6 +30,24 @@ class GeographicFeatureSet:
         return len(self.features)
 
 
+@dataclass
+class BuildingFeature:
+    """A single building footprint in WGS84 (lon/lat) plus its derived height."""
+
+    geometry: BaseGeometry  # Polygon in EPSG:4326
+    height_m: float
+    name: Optional[str] = None
+
+
+@dataclass
+class BuildingFeatureSet:
+    features: List[BuildingFeature] = field(default_factory=list)
+    crs: str = "EPSG:4326"
+
+    def __len__(self) -> int:
+        return len(self.features)
+
+
 class GeographicDataProvider(Protocol):
     def fetch_roads(
         self,
@@ -39,4 +57,13 @@ class GeographicDataProvider(Protocol):
         north: float,
         road_classes: Sequence[str],
     ) -> GeographicFeatureSet:
+        ...
+
+    def fetch_buildings(
+        self,
+        west: float,
+        south: float,
+        east: float,
+        north: float,
+    ) -> BuildingFeatureSet:
         ...

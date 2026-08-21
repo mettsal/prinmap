@@ -11,12 +11,21 @@ export type BBoxSelection = {
 export type Selection = BBoxSelection;
 
 export type StylePreset = "dark-minimal" | "architectural-monochrome";
-export type MapPreset = "dark" | "mono";
+// "3d" is a preview-only basemap (OpenFreeMap + extruded buildings + terrain)
+// — it never affects the generated SVG/STL artifact.
+export type MapPreset = "dark" | "mono" | "3d";
+
+export type FabricFeature = "roads" | "buildings" | "blocks";
 
 export type GenerationState =
   | { status: "idle" }
   | { status: "generating" }
   | { status: "success"; svg: string; metadata: Record<string, unknown> }
+  | { status: "error"; message: string };
+
+export type MeshStatus =
+  | { status: "idle" }
+  | { status: "exporting" }
   | { status: "error"; message: string };
 
 export type GenerateResponse = {

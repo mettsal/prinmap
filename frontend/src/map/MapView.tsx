@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import maplibregl from "maplibre-gl";
 import type { MapMouseEvent } from "maplibre-gl";
-import { getMapStyle } from "./mapStyles";
+import { getMapStyle, TERRAIN_SOURCE_ID, TERRAIN_TILE_URL } from "./mapStyles";
 import { bboxFromCorners, bboxToFeatureCollection } from "../selection/selection";
 import type { BBoxSelection, MapPreset } from "../types";
 
@@ -67,6 +67,21 @@ export default function MapView({
     if (src) src.setData(bboxToFeatureCollection(bbox) as never);
   }
 
+  // Drape terrain relief under the 3D preview (the "liberty" style already
+  // ships its own building-3d fill-extrusion layer, so we only add terrain).
+  function ensureTerrain(map: maplibregl.Map) {
+    if (!map.getSource(TERRAIN_SOURCE_ID)) {
+      map.addSource(TERRAIN_SOURCE_ID, {
+        type: "raster-dem",
+        tiles: [TERRAIN_TILE_URL],
+        tileSize: 256,
+        encoding: "terrarium",
+        maxzoom: 15,
+      });
+    }
+    map.setTerrain({ source: TERRAIN_SOURCE_ID, exaggeration: 1.5 });
+  }
+
   // Mount / unmount the map once.
   useEffect(() => {
     if (!containerRef.current) return;
@@ -115,10 +130,34 @@ export default function MapView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Switch basemap when the preset changes.
+  // Switch basemap when the preset changes; terrain/pitch follow the "3d" mode.
+  // Calling setTerrain()/setStyle() before the map's style has finished its
+  // first load throws ("Style is not done loading") and crashes the render —
+  // so gate on isStyleLoaded()/the `load` event rather than "is this the
+  // first effect run", which breaks under React.StrictMode's mount/remount.
   useEffect(() => {
     const map = mapRef.current;
-    if (map) map.setStyle(getMapStyle(preset));
+    if (!map) return;
+
+    const apply = () => {
+      map.setTerrain(null);
+      map.setStyle(getMapStyle(preset));
+      map.once("styledata", () => {
+        if (preset === "3d") {
+          ensureTerrain(map);
+          map.easeTo({ pitch: 60, duration: 600 });
+        } else {
+          map.easeTo({ pitch: 0, bearing: 0, duration: 600 });
+        }
+      });
+    };
+
+    if (map.isStyleLoaded()) {
+      apply();
+    } else {
+      map.once("load", apply);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preset]);
 
   // Reflect externally-driven selection changes (e.g. Clear button).

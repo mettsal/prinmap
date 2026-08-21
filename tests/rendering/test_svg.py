@@ -7,11 +7,18 @@ from app.models.schemas import BBoxSelection, Parameters
 from app.rendering.styles import get_style
 from app.rendering.svg import render_svg
 
-from ..fixtures import BBOX, grid_feature_set
+from ..fixtures import BBOX, building_feature_set, grid_feature_set
 
 
-def _render(preset: str = "dark-minimal", size: int = 800) -> str:
-    processed = process_fabric(grid_feature_set(), BBoxSelection(**BBOX), Parameters())
+def _render(preset: str = "dark-minimal", size: int = 800, features=None):
+    features = features or {"roads"}
+    processed = process_fabric(
+        BBoxSelection(**BBOX),
+        features,
+        Parameters(),
+        road_feature_set=grid_feature_set() if features & {"roads", "blocks"} else None,
+        building_feature_set=building_feature_set() if "buildings" in features else None,
+    )
     return render_svg(processed, get_style(preset), size=size)
 
 
@@ -37,3 +44,17 @@ def test_style_changes_colors_only():
     assert "#0d0d0f" in dark
     assert "#ffffff" in mono
     assert "#101010" in mono
+
+
+def test_layer_paint_order_blocks_buildings_roads():
+    svg = _render(features={"roads", "buildings", "blocks"})
+    root = ET.fromstring(svg)
+    top_groups = [g.attrib.get("id") for g in root if g.tag.endswith("g")]
+    assert top_groups == ["background", "blocks", "buildings", "roads"]
+
+
+def test_buildings_only_svg_has_no_road_group():
+    svg = _render(features={"buildings"})
+    root = ET.fromstring(svg)
+    group_ids = {g.attrib.get("id") for g in root if g.tag.endswith("g")}
+    assert group_ids == {"background", "buildings"}

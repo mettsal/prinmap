@@ -10,16 +10,17 @@ from __future__ import annotations
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from .errors import FabricError, invalid_selection
 from .models.schemas import (
+    GenerateMeshRequest,
     GenerateRequest,
     GenerateResponse,
     GeocodeResponse,
 )
 from .providers.geocode import geocode
-from .service import generate_fabric
+from .service import generate_fabric, generate_mesh
 
 app = FastAPI(title="Urban Fabric Generator", version="0.1.0")
 
@@ -48,6 +49,16 @@ def health() -> dict:
 @app.post("/api/v1/generate", response_model=GenerateResponse)
 def generate(request: GenerateRequest) -> GenerateResponse:
     return generate_fabric(request)
+
+
+@app.post("/api/v1/generate/mesh")
+def generate_mesh_endpoint(request: GenerateMeshRequest) -> Response:
+    stl_bytes = generate_mesh(request)
+    return Response(
+        content=stl_bytes,
+        media_type="model/stl",
+        headers={"Content-Disposition": 'attachment; filename="urban-fabric.stl"'},
+    )
 
 
 @app.get("/api/v1/geocode", response_model=GeocodeResponse)

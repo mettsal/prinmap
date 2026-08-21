@@ -10,13 +10,22 @@ import uuid
 
 from .config import settings
 from .errors import empty_geometry, invalid_selection, selection_too_large
+from .geometry.extrude import build_scene_mesh
 from .geometry.processing import process_fabric
 from .geometry.projection import projection_for
-from .models.schemas import BBoxSelection, GenerateRequest, GenerateResponse
+from .models.schemas import (
+    BBoxSelection,
+    GenerateMeshRequest,
+    GenerateRequest,
+    GenerateResponse,
+)
 from .providers.base import GeographicDataProvider
 from .providers.osm import DEFAULT_ROAD_CLASSES, OSMProvider
+from .rendering.stl import write_stl_binary
 from .rendering.styles import get_style
 from .rendering.svg import render_svg
+
+KNOWN_FEATURES = {"roads", "buildings", "blocks"}
 
 
 def _validate_bbox(bbox: BBoxSelection) -> None:
@@ -38,13 +47,7 @@ def _selection_area_km2(bbox: BBoxSelection) -> float:
     return abs(maxx - minx) * abs(maxy - miny) / 1_000_000.0
 
 
-def generate_fabric(
-    request: GenerateRequest,
-    provider: GeographicDataProvider | None = None,
-) -> GenerateResponse:
-    bbox = request.selection
-    _validate_bbox(bbox)
-
+def _check_area(bbox: BBoxSelection) -> float:
     area = _selection_area_km2(bbox)
     if area < settings.min_selection_area_m2 / 1_000_000.0:
         raise invalid_selection("Selection is too small to generate anything useful.")
@@ -53,20 +56,55 @@ def generate_fabric(
             f"Selection area is ~{area:.1f} km². "
             f"Maximum supported area is {settings.max_selection_area_km2:.0f} km²."
         )
+    return area
 
-    provider = provider or OSMProvider()
-    feature_set = provider.fetch_roads(
-        bbox.west, bbox.south, bbox.east, bbox.north, DEFAULT_ROAD_CLASSES
-    )
-    if len(feature_set) == 0:
-        raise empty_geometry(
-            "No supported road features were found in the selected region."
+
+def generate_fabric(
+    request: GenerateRequest,
+    provider: GeographicDataProvider | None = None,
+) -> GenerateResponse:
+    bbox = request.selection
+    _validate_bbox(bbox)
+    area = _check_area(bbox)
+
+    features = set(request.fabric.features) & KNOWN_FEATURES
+    if not features:
+        raise invalid_selection(
+            f"fabric.features must include at least one of {sorted(KNOWN_FEATURES)}."
         )
 
-    processed = process_fabric(feature_set, bbox, request.parameters)
-    if processed.geometry.is_empty:
+    provider = provider or OSMProvider()
+
+    road_feature_set = None
+    if "roads" in features or "blocks" in features:
+        road_feature_set = provider.fetch_roads(
+            bbox.west, bbox.south, bbox.east, bbox.north, DEFAULT_ROAD_CLASSES
+        )
+
+    building_feature_set = None
+    if "buildings" in features:
+        building_feature_set = provider.fetch_buildings(
+            bbox.west, bbox.south, bbox.east, bbox.north
+        )
+
+    fetched_anything = (road_feature_set is not None and len(road_feature_set) > 0) or (
+        building_feature_set is not None and len(building_feature_set) > 0
+    )
+    if not fetched_anything:
         raise empty_geometry(
-            "The selected roads produced no drawable area at this detail level."
+            "No supported features were found in the selected region."
+        )
+
+    processed = process_fabric(
+        bbox,
+        features,
+        request.parameters,
+        road_feature_set=road_feature_set,
+        building_feature_set=building_feature_set,
+    )
+    if not any(not g.is_empty for g in processed.layers.values()):
+        raise empty_geometry(
+            "The selected features produced no drawable area at this detail level."
         )
 
     style = get_style(request.style.preset)
@@ -82,3 +120,40 @@ def generate_fabric(
         svg=svg,
         metadata=metadata,
     )
+
+
+def generate_mesh(
+    request: GenerateMeshRequest,
+    provider: GeographicDataProvider | None = None,
+) -> bytes:
+    """Fetch building footprints and extrude them into a watertight STL mesh.
+
+    Buildings sit on a flat z=0 ground plane — terrain relief isn't drapped in
+    yet (see AGENTS.md).
+    """
+    bbox = request.selection
+    _validate_bbox(bbox)
+    _check_area(bbox)
+
+    provider = provider or OSMProvider()
+    building_feature_set = provider.fetch_buildings(
+        bbox.west, bbox.south, bbox.east, bbox.north
+    )
+    if len(building_feature_set) == 0:
+        raise empty_geometry(
+            "No building footprints were found in the selected region."
+        )
+
+    processed = process_fabric(
+        bbox, {"buildings"}, request.parameters, building_feature_set=building_feature_set
+    )
+    if not processed.buildings_3d:
+        raise empty_geometry(
+            "The selected buildings produced no extrudable mesh at this detail level."
+        )
+
+    vertices, faces = build_scene_mesh(processed.buildings_3d)
+    if len(faces) == 0:
+        raise empty_geometry("Mesh extrusion produced no triangles.")
+
+    return write_stl_binary(vertices, faces)

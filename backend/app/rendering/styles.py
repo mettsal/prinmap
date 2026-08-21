@@ -14,23 +14,32 @@ class FabricStyle:
     name: str
     background: str
     road: str
+    block_fill: str  # interior of a city block (frame minus roads)
+    building_fill: str  # individual building footprint
     # Pixel margin inside the SVG canvas.
     margin: float
 
 
 PRESETS: dict[str, FabricStyle] = {
-    # Dark background, light roads.
+    # Dark background, light roads. Blocks/buildings read as bright mass on
+    # near-black ground, roads as slightly brighter cuts through it.
     "dark-minimal": FabricStyle(
         name="dark-minimal",
         background="#0d0d0f",
         road="#f5f5f5",
+        block_fill="#3a3d47",
+        building_fill="#e8e9ee",
         margin=48.0,
     ),
-    # White background, black roads — the architectural reference look.
+    # White background, black fill — the classic architectural figure-ground
+    # look (Nolli-style): buildings/blocks as solid black mass, streets as the
+    # white gaps between them.
     "architectural-monochrome": FabricStyle(
         name="architectural-monochrome",
         background="#ffffff",
         road="#101010",
+        block_fill="#c9c9c9",
+        building_fill="#101010",
         margin=48.0,
     ),
 }

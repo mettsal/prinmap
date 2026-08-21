@@ -1,8 +1,11 @@
 """SVG renderer (DESIGN.md §19, §20).
 
-Consumes a ProcessedGeometry (projected metres) + a FabricStyle and emits an SVG
-string. Normalizes the projected frame into the canvas, preserving aspect ratio,
-and flips Y (geographic north is up; SVG y grows down).
+Consumes a ProcessedFabric (projected metres, one geometry per requested
+layer) + a FabricStyle and emits an SVG string. Normalizes the projected frame
+into the canvas, preserving aspect ratio, and flips Y (geographic north is up;
+SVG y grows down). Layers are drawn in a fixed painter's order — blocks (base
+mass), then buildings (finer mass on top), then roads (cuts/lines on top) —
+and a layer is only emitted if it was actually requested and non-empty.
 """
 
 from __future__ import annotations
@@ -10,21 +13,16 @@ from __future__ import annotations
 from typing import Callable
 from xml.sax.saxutils import escape
 
-from shapely.geometry.base import BaseGeometry
-
-from ..geometry.processing import ProcessedGeometry
+from ..geometry.collections import iter_polygons
+from ..geometry.processing import ProcessedFabric
 from .styles import FabricStyle
 
-
-def _iter_polygons(geom: BaseGeometry):
-    if geom.is_empty:
-        return
-    gtype = geom.geom_type
-    if gtype == "Polygon":
-        yield geom
-    elif gtype in ("MultiPolygon", "GeometryCollection"):
-        for part in geom.geoms:
-            yield from _iter_polygons(part)
+# (layer key, style attribute name) in paint order, back to front.
+_LAYER_ORDER = [
+    ("blocks", "block_fill"),
+    ("buildings", "building_fill"),
+    ("roads", "road"),
+]
 
 
 def _ring_to_path(coords, project: Callable[[float, float], tuple[float, float]]) -> str:
@@ -37,18 +35,16 @@ def _ring_to_path(coords, project: Callable[[float, float], tuple[float, float]]
     return "".join(pieces)
 
 
-def _geometry_to_path(
-    geom: BaseGeometry, project: Callable[[float, float], tuple[float, float]]
-) -> str:
+def _geometry_to_path(geom, project: Callable[[float, float], tuple[float, float]]) -> str:
     subpaths = []
-    for polygon in _iter_polygons(geom):
+    for polygon in iter_polygons(geom):
         subpaths.append(_ring_to_path(polygon.exterior.coords, project))
         for interior in polygon.interiors:
             subpaths.append(_ring_to_path(interior.coords, project))
     return "".join(subpaths)
 
 
-def render_svg(processed: ProcessedGeometry, style: FabricStyle, size: int = 1600) -> str:
+def render_svg(processed: ProcessedFabric, style: FabricStyle, size: int = 1600) -> str:
     minx, miny, maxx, maxy = processed.frame.bounds
     frame_w = max(maxx - minx, 1e-9)
     frame_h = max(maxy - miny, 1e-9)
@@ -64,24 +60,28 @@ def render_svg(processed: ProcessedGeometry, style: FabricStyle, size: int = 160
         py = size - (offset_y + (y - miny) * scale)  # flip Y
         return px, py
 
-    path_d = _geometry_to_path(processed.geometry, project)
-
     bg = escape(style.background)
-    road = escape(style.road)
-    roads_group = (
-        f'    <path d="{path_d}" fill="{road}" fill-rule="evenodd" />\n'
-        if path_d
-        else ""
-    )
+    groups = [
+        "  <g id=\"background\">\n"
+        f'    <rect x="0" y="0" width="{size}" height="{size}" fill="{bg}" />\n'
+        "  </g>\n"
+    ]
+
+    for layer_key, style_attr in _LAYER_ORDER:
+        geometry = processed.layers.get(layer_key)
+        if geometry is None or geometry.is_empty:
+            continue
+        path_d = _geometry_to_path(geometry, project)
+        if not path_d:
+            continue
+        fill = escape(getattr(style, style_attr))
+        groups.append(
+            f'  <g id="{layer_key}">\n'
+            f'    <path d="{path_d}" fill="{fill}" fill-rule="evenodd" />\n'
+            "  </g>\n"
+        )
 
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" '
-        f'viewBox="0 0 {size} {size}">\n'
-        f'  <g id="background">\n'
-        f'    <rect x="0" y="0" width="{size}" height="{size}" fill="{bg}" />\n'
-        f'  </g>\n'
-        f'  <g id="roads">\n'
-        f"{roads_group}"
-        f'  </g>\n'
-        f"</svg>\n"
+        f'viewBox="0 0 {size} {size}">\n' + "".join(groups) + "</svg>\n"
     )

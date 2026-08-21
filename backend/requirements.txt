@@ -4,3 +4,5 @@ pydantic>=2.6
 shapely>=2.0
 pyproj>=3.6
 requests>=2.31
+numpy>=1.26
+mapbox-earcut>=1.0

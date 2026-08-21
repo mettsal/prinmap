@@ -35,6 +35,9 @@ class Source(BaseModel):
 
 
 class Fabric(BaseModel):
+    # Any of "roads", "buildings", "blocks" (city-block interiors derived from
+    # the street network). Layers are independently toggleable and drawn in
+    # that painter's order (blocks -> buildings -> roads).
     features: List[str] = Field(default_factory=lambda: ["roads"])
 
 
@@ -54,6 +57,14 @@ class GenerateRequest(BaseModel):
     source: Source = Field(default_factory=Source)
     fabric: Fabric = Field(default_factory=Fabric)
     style: Style = Field(default_factory=Style)
+    parameters: Parameters = Field(default_factory=Parameters)
+
+
+class GenerateMeshRequest(BaseModel):
+    """Input for the 3D building-mesh (STL) export — always buildings-only."""
+
+    selection: BBoxSelection
+    source: Source = Field(default_factory=Source)
     parameters: Parameters = Field(default_factory=Parameters)
 
 
