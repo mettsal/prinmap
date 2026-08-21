@@ -1,0 +1,268 @@
+:root {
+  --bg: #14151a;
+  --panel: #1c1e26;
+  --panel-2: #23262f;
+  --border: #2e313d;
+  --text: #e7e8ee;
+  --muted: #8b8f9e;
+  --accent: #4f9cff;
+  --accent-strong: #2f7fe0;
+  --error: #ff6b6b;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.app-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+.app-header h1 {
+  font-size: 18px;
+  margin: 0;
+  font-weight: 600;
+}
+.tagline {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.app-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 320px 1fr 420px;
+  min-height: 0;
+}
+
+.sidebar {
+  border-right: 1px solid var(--border);
+  background: var(--panel);
+  padding: 14px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.map-area {
+  position: relative;
+  min-width: 0;
+}
+.map-canvas {
+  position: absolute;
+  inset: 0;
+}
+
+/* ---- Search ---- */
+.search-row {
+  display: flex;
+  gap: 6px;
+}
+.search input {
+  flex: 1;
+  min-width: 0;
+}
+.search-results {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.search-results li button {
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-2);
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 0;
+}
+.search-results li:last-child button {
+  border-bottom: none;
+}
+.search-error {
+  color: var(--error);
+  font-size: 12px;
+}
+
+/* ---- Controls ---- */
+.controls {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.control-block h2 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+.button-row {
+  display: flex;
+  gap: 6px;
+}
+.readout {
+  font-size: 12px;
+  margin: 8px 0 0;
+  font-variant-numeric: tabular-nums;
+}
+.muted {
+  color: var(--muted);
+}
+
+.slider {
+  display: block;
+  font-size: 12px;
+  margin-top: 12px;
+}
+.slider input {
+  width: 100%;
+  margin-top: 4px;
+}
+
+/* ---- Inputs & buttons ---- */
+input[type="text"],
+input:not([type]),
+.search input,
+select {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 9px;
+  font-size: 13px;
+  width: 100%;
+}
+button {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 11px;
+  font-size: 13px;
+  cursor: pointer;
+}
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+button.primary {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: #fff;
+}
+button.primary:hover:not(:disabled) {
+  background: var(--accent);
+}
+.generate {
+  padding: 11px;
+  font-weight: 600;
+}
+
+.status {
+  font-size: 12px;
+  margin: 0;
+  color: var(--muted);
+}
+.status-success {
+  color: #66d19e;
+}
+.status-error {
+  color: var(--error);
+}
+
+/* ---- Preview ---- */
+.preview {
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.preview-actions {
+  display: flex;
+  gap: 6px;
+}
+.preview-stage {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    linear-gradient(45deg, #1a1b21 25%, transparent 25%),
+    linear-gradient(-45deg, #1a1b21 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #1a1b21 75%),
+    linear-gradient(-45deg, transparent 75%, #1a1b21 75%);
+  background-size: 20px 20px;
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+  touch-action: none;
+  cursor: grab;
+}
+.preview-stage:active {
+  cursor: grabbing;
+}
+.preview-svg {
+  transform-origin: center center;
+}
+.preview-svg svg {
+  display: block;
+  max-width: 380px;
+  max-height: 380px;
+  width: auto;
+  height: auto;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+.preview-hint {
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 0 24px;
+}
+.preview-hint.error {
+  color: var(--error);
+}

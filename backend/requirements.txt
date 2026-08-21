@@ -1,0 +1,6 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6
+shapely>=2.0
+pyproj>=3.6
+requests>=2.31
