@@ -18,7 +18,7 @@ from shapely.geometry.base import BaseGeometry
 from shapely.ops import transform, unary_union
 
 from ..models.schemas import BBoxSelection, Parameters
-from ..providers.base import BuildingFeatureSet, GeographicFeatureSet
+from ..providers.base import AreaFeatureSet, BuildingFeatureSet, GeographicFeatureSet
 from ..rendering.styles import base_width
 from .collections import iter_lines, iter_polygons
 from .projection import Projection, projection_for
@@ -44,6 +44,12 @@ class ProcessedFabric:
     projection: Optional[Projection] = None
     bbox: Optional[BBoxSelection] = None
     metadata: dict = field(default_factory=dict)
+    # Always populated when their feature_set is given, independent of the
+    # `features` toggle — the 3D pipeline (apply_surface_treatments) needs
+    # these masks even when the corresponding 2D layer isn't rendered.
+    road_area: BaseGeometry = EMPTY_POLYGON
+    water_area: BaseGeometry = EMPTY_POLYGON
+    park_area: BaseGeometry = EMPTY_POLYGON
 
 
 def normalize_detail(detail: float) -> float:
@@ -139,6 +145,38 @@ def process_buildings(
     return footprints, stats
 
 
+def process_landuse(
+    feature_set: AreaFeatureSet,
+    frame: BaseGeometry,
+    proj: Projection,
+    tolerance_m: float = 2.0,
+) -> tuple[BaseGeometry, dict]:
+    """Reproject -> clip -> union -> light simplify water/park polygons.
+
+    Unlike roads, water/park boundaries aren't hierarchy-filtered by `detail`,
+    so this uses a small fixed tolerance rather than a detail-scaled one.
+    """
+    polys: list[BaseGeometry] = []
+    for feature in feature_set.features:
+        projected = transform(proj.fwd_xy, feature.geometry)
+        clipped = projected.intersection(frame)
+        if clipped.is_empty:
+            continue
+        polys.extend(iter_polygons(clipped))
+
+    if not polys:
+        return EMPTY_POLYGON, {"input_area_features": len(feature_set), "kept_area_polygons": 0}
+
+    merged = unary_union(polys)
+    if tolerance_m > 0:
+        merged = merged.simplify(tolerance_m, preserve_topology=True)
+    stats = {
+        "input_area_features": len(feature_set),
+        "kept_area_polygons": len(list(iter_polygons(merged))),
+    }
+    return merged, stats
+
+
 def process_blocks(road_geometry: BaseGeometry, frame: BaseGeometry) -> BaseGeometry:
     """The interior of city blocks — whatever is inside the frame but outside roads."""
     blocks = frame if road_geometry.is_empty else frame.difference(road_geometry)
@@ -156,13 +194,18 @@ def process_fabric(
     parameters: Parameters,
     road_feature_set: GeographicFeatureSet | None = None,
     building_feature_set: BuildingFeatureSet | None = None,
+    water_feature_set: AreaFeatureSet | None = None,
+    park_feature_set: AreaFeatureSet | None = None,
 ) -> ProcessedFabric:
     """Orchestrate the layered pipeline for whichever feature layers were requested.
 
     `road_feature_set` should be provided whenever "roads" or "blocks" is in
     `features` (blocks are derived from the street network even if roads
     themselves aren't rendered); `building_feature_set` whenever "buildings" is
-    requested.
+    requested. `water_feature_set`/`park_feature_set`, when given, are always
+    processed into `ProcessedFabric.water_area`/`park_area` regardless of
+    whether "water"/"parks" is in `features` — the 3D surface-treatment pass
+    needs these masks even when the 2D layer itself isn't rendered.
     """
     center_lon = (bbox.west + bbox.east) / 2.0
     center_lat = (bbox.south + bbox.north) / 2.0
@@ -185,6 +228,20 @@ def process_fabric(
         stats.update(building_stats)
         if buildings_3d:
             layers["buildings"] = unary_union([poly for poly, _ in buildings_3d])
+
+    water_geometry = EMPTY_POLYGON
+    if water_feature_set is not None:
+        water_geometry, water_stats = process_landuse(water_feature_set, frame, proj)
+        stats.update({f"water_{k}": v for k, v in water_stats.items()})
+        if "water" in features:
+            layers["water"] = water_geometry
+
+    park_geometry = EMPTY_POLYGON
+    if park_feature_set is not None:
+        park_geometry, park_stats = process_landuse(park_feature_set, frame, proj)
+        stats.update({f"park_{k}": v for k, v in park_stats.items()})
+        if "parks" in features:
+            layers["parks"] = park_geometry
 
     if "blocks" in features:
         layers["blocks"] = process_blocks(road_geometry, frame)
@@ -211,4 +268,7 @@ def process_fabric(
         projection=proj,
         bbox=bbox,
         metadata=metadata,
+        road_area=road_geometry,
+        water_area=water_geometry,
+        park_area=park_geometry,
     )

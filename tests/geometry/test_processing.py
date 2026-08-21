@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from app.geometry.processing import normalize_detail, process_fabric
+from app.geometry.processing import _build_frame, normalize_detail, process_fabric, process_landuse
+from app.geometry.projection import projection_for
 from app.models.schemas import BBoxSelection, Parameters
 
-from ..fixtures import BBOX, building_feature_set, grid_feature_set
+from ..fixtures import BBOX, building_feature_set, grid_feature_set, park_feature_set, water_feature_set
 
 
 def _bbox() -> BBoxSelection:
@@ -96,3 +97,43 @@ def test_all_three_layers_can_coexist():
         building_feature_set=building_feature_set(),
     )
     assert set(processed.layers.keys()) == {"roads", "buildings", "blocks"}
+
+
+def test_process_landuse_clips_unions_and_simplifies():
+    bbox = _bbox()
+    proj = projection_for((bbox.west + bbox.east) / 2, (bbox.south + bbox.north) / 2)
+    frame = _build_frame(bbox, proj)
+    geometry, stats = process_landuse(water_feature_set(), frame, proj)
+    assert not geometry.is_empty
+    assert geometry.area > 0
+    assert frame.buffer(1.0).contains(geometry)
+    assert stats["kept_area_polygons"] == 1
+
+
+def test_water_and_parks_layers_populate_when_requested():
+    processed = process_fabric(
+        _bbox(),
+        {"water", "parks"},
+        Parameters(),
+        water_feature_set=water_feature_set(),
+        park_feature_set=park_feature_set(),
+    )
+    assert "water" in processed.layers and not processed.layers["water"].is_empty
+    assert "parks" in processed.layers and not processed.layers["parks"].is_empty
+
+
+def test_water_and_park_areas_populate_on_dataclass_even_when_not_in_features():
+    # generate_mesh needs road_area/water_area/park_area for the 3D surface
+    # treatment even when the 2D "water"/"parks" layers aren't requested.
+    processed = process_fabric(
+        _bbox(),
+        {"buildings"},
+        Parameters(),
+        building_feature_set=building_feature_set(),
+        water_feature_set=water_feature_set(),
+        park_feature_set=park_feature_set(),
+    )
+    assert "water" not in processed.layers
+    assert "parks" not in processed.layers
+    assert not processed.water_area.is_empty
+    assert not processed.park_area.is_empty

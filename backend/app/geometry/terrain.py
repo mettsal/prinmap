@@ -7,11 +7,15 @@ buildings can be seated on real ground elevation instead of a flat z=0 plane.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
+import shapely
 from shapely.geometry import Polygon
+from shapely.geometry.base import BaseGeometry
 
 from ..providers.elevation import ElevationProvider
+from .collections import iter_polygons
 from .mesh_utils import MeshPart
 from .projection import Projection
 
@@ -23,6 +27,12 @@ MAX_GRID_POINTS_PER_AXIS = 300
 # How far a building's seated floor is sunk below its lowest sampled ground
 # corner, to guarantee fusion with the terrain surface (no visible gap).
 BUILDING_SINK_M = 0.1
+
+# Surface-treatment constants (roads/water/parks — see apply_surface_treatments).
+WATER_SUBMERSION_M = 0.3  # water flattened, then sunk below its rim
+STREET_RECESS_DEPTH_M = 0.6  # "recessed" street mode: channel depth
+STREET_TEXTURE_AMPLITUDE_M = 0.15  # "textured" street mode: bump height
+PARK_TEXTURE_AMPLITUDE_M = 0.12  # park ground-texture bump height
 
 
 @dataclass
@@ -167,3 +177,86 @@ def building_base_z(footprint: Polygon, grid: ElevationGrid, base_thickness_m: f
     ground = min(grid.sample_bilinear(x, y) for x, y in coords)
     base_z = ground - BUILDING_SINK_M
     return max(base_z, terrain_floor_z(grid, base_thickness_m))
+
+
+def _contains_mask(geom: BaseGeometry, xr: np.ndarray, yr: np.ndarray) -> np.ndarray:
+    if geom.is_empty:
+        return np.zeros(xr.shape, dtype=bool)
+    return shapely.contains_xy(geom, xr, yr)
+
+
+def _water_component_flat_z(polygon: Polygon, grid: ElevationGrid) -> float:
+    """Mirrors building_base_z's pattern: min of sampled elevation at this
+    single water polygon's own boundary vertices."""
+    coords = list(polygon.exterior.coords)
+    return min(grid.sample_bilinear(x, y) for x, y in coords)
+
+
+def _street_texture(x: np.ndarray, y: np.ndarray, grid: ElevationGrid) -> np.ndarray:
+    """Checkerboard bump pattern (period 2 grid cells) — single-valued
+    heightfield, no overhangs. Pitch is tied to the grid's own resolution_m
+    (one bump per cell): coarse at the default 10m spacing. See AGENTS.md."""
+    ix = np.searchsorted(grid.xs, x)
+    iy = np.searchsorted(grid.ys, y)
+    return np.where((ix + iy) % 2 == 0, STREET_TEXTURE_AMPLITUDE_M, 0.0)
+
+
+def _park_texture(x: np.ndarray, y: np.ndarray, grid: ElevationGrid) -> np.ndarray:
+    """Diagonal-stripe bump pattern (period 3 grid cells) — deliberately
+    distinct from the street checkerboard (different period, same axis-
+    aligned index scheme) so the two read as different textures."""
+    ix = np.searchsorted(grid.xs, x)
+    iy = np.searchsorted(grid.ys, y)
+    return np.where((ix + iy) % 3 == 0, PARK_TEXTURE_AMPLITUDE_M, 0.0)
+
+
+def apply_surface_treatments(
+    grid: ElevationGrid,
+    road_area: BaseGeometry,
+    water_area: BaseGeometry,
+    park_area: BaseGeometry,
+    street_style: Literal["recessed", "textured"],
+    street_recess_depth_m: float = STREET_RECESS_DEPTH_M,
+) -> ElevationGrid:
+    """Mutate a *copy* of grid.elevations per node, based on which mask(s)
+    contain that node — applied BEFORE build_terrain_mesh, never by touching
+    its topology-building code. Since build_terrain_mesh is a pure function
+    of whatever Z values are already in the grid, watertightness stays
+    guaranteed "for free": only Z values change here, never triangle
+    connectivity.
+
+    Overlap priority: water > road > park — each node gets exactly one
+    treatment (masks are made mutually exclusive before applying), not a
+    stack of overlapping ones.
+    """
+    xx, yy = np.meshgrid(grid.xs, grid.ys)
+    xr, yr = xx.ravel(), yy.ravel()
+    zr = grid.elevations.ravel().copy()
+
+    road_mask = _contains_mask(road_area, xr, yr)
+    water_mask = _contains_mask(water_area, xr, yr)
+    park_mask = _contains_mask(park_area, xr, yr)
+
+    road_only = road_mask & ~water_mask
+    park_only = park_mask & ~road_mask & ~water_mask
+
+    if park_only.any():
+        zr[park_only] += _park_texture(xr[park_only], yr[park_only], grid)
+
+    if road_only.any():
+        if street_style == "recessed":
+            zr[road_only] -= street_recess_depth_m
+        else:
+            zr[road_only] += _street_texture(xr[road_only], yr[road_only], grid)
+
+    # Flatten per connected water component (not one global min-of-boundary
+    # across all water) so one low-lying lake elsewhere in the selection
+    # can't trench an unrelated water body.
+    for water_poly in iter_polygons(water_area):
+        poly_mask = _contains_mask(water_poly, xr, yr)
+        if not poly_mask.any():
+            continue
+        flat_z = _water_component_flat_z(water_poly, grid) - WATER_SUBMERSION_M
+        zr[poly_mask] = flat_z
+
+    return ElevationGrid(xs=grid.xs, ys=grid.ys, elevations=zr.reshape(grid.elevations.shape))

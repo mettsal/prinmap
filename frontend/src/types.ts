@@ -15,7 +15,10 @@ export type StylePreset = "dark-minimal" | "architectural-monochrome";
 // — it never affects the generated SVG/STL artifact.
 export type MapPreset = "dark" | "mono" | "3d";
 
-export type FabricFeature = "roads" | "buildings" | "blocks";
+export type FabricFeature = "roads" | "buildings" | "blocks" | "water" | "parks";
+
+// How streets are differentiated on the (mono-material) printed terrain.
+export type StreetStyle = "recessed" | "textured";
 
 export type GenerationState =
   | { status: "idle" }
@@ -54,4 +57,5 @@ export type TerrainParams = {
   resolution_m: number;
   base_thickness_m: number;
   exaggeration: number; // vertical scale on relief only, not building heights
+  street_style: StreetStyle;
 };

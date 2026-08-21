@@ -16,6 +16,8 @@ class FabricStyle:
     road: str
     block_fill: str  # interior of a city block (frame minus roads)
     building_fill: str  # individual building footprint
+    water_fill: str  # water bodies (lakes, rivers, reservoirs)
+    park_fill: str  # parks, woods, forests
     # Pixel margin inside the SVG canvas.
     margin: float
 
@@ -29,6 +31,8 @@ PRESETS: dict[str, FabricStyle] = {
         road="#f5f5f5",
         block_fill="#3a3d47",
         building_fill="#e8e9ee",
+        water_fill="#1e3a4a",
+        park_fill="#2f4033",
         margin=48.0,
     ),
     # White background, black fill — the classic architectural figure-ground
@@ -40,6 +44,8 @@ PRESETS: dict[str, FabricStyle] = {
         road="#101010",
         block_fill="#c9c9c9",
         building_fill="#101010",
+        water_fill="#8a9aa5",
+        park_fill="#a8b0a0",
         margin=48.0,
     ),
 }

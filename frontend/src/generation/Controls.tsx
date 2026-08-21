@@ -6,6 +6,7 @@ import type {
   GenerationState,
   MapPreset,
   MeshStatus,
+  StreetStyle,
   StylePreset,
   TerrainParams,
 } from "../types";
@@ -35,6 +36,8 @@ const FEATURE_LABELS: Record<FabricFeature, string> = {
   roads: "Roads",
   buildings: "Buildings (footprints)",
   blocks: "Block interiors",
+  water: "Water",
+  parks: "Parks & woods",
 };
 
 export default function Controls(props: Props) {
@@ -217,6 +220,19 @@ export default function Controls(props: Props) {
                 }
               />
             </label>
+
+            <label className="slider">
+              Street treatment
+              <select
+                value={terrainParams.street_style}
+                onChange={(e) =>
+                  onTerrainParams({ ...terrainParams, street_style: e.target.value as StreetStyle })
+                }
+              >
+                <option value="recessed">Recessed (carved channel)</option>
+                <option value="textured">Textured (embossed surface)</option>
+              </select>
+            </label>
           </>
         )}
 
@@ -225,7 +241,7 @@ export default function Controls(props: Props) {
         </button>
         <p className="readout muted">
           {terrainParams.include
-            ? "Extrudes OSM building footprints (default ~9 m when unknown), fused onto real terrain relief with a solid flat base — ready to slice/print as one piece."
+            ? "Extrudes OSM building footprints (default ~9 m when unknown), fused onto real terrain relief with a solid flat base. Streets, water, and parks/woods are differentiated by shape/texture — ready to slice/print as one piece."
             : "Extrudes OSM building footprints (default ~9 m when unknown) onto a flat ground plane, no terrain — faster, network-lighter."}
         </p>
         {meshStatus.status === "error" && (

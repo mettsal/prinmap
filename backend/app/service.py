@@ -14,7 +14,12 @@ from .geometry.extrude import build_scene_mesh, build_scene_mesh_with_base
 from .geometry.mesh_utils import merge_meshes
 from .geometry.processing import process_fabric
 from .geometry.projection import projection_for
-from .geometry.terrain import building_base_z, build_terrain_mesh, sample_elevation_grid
+from .geometry.terrain import (
+    apply_surface_treatments,
+    building_base_z,
+    build_terrain_mesh,
+    sample_elevation_grid,
+)
 from .models.schemas import (
     BBoxSelection,
     GenerateMeshRequest,
@@ -28,7 +33,7 @@ from .rendering.stl import write_stl_binary
 from .rendering.styles import get_style
 from .rendering.svg import render_svg
 
-KNOWN_FEATURES = {"roads", "buildings", "blocks"}
+KNOWN_FEATURES = {"roads", "buildings", "blocks", "water", "parks"}
 
 
 def _validate_bbox(bbox: BBoxSelection) -> None:
@@ -90,8 +95,19 @@ def generate_fabric(
             bbox.west, bbox.south, bbox.east, bbox.north
         )
 
-    fetched_anything = (road_feature_set is not None and len(road_feature_set) > 0) or (
-        building_feature_set is not None and len(building_feature_set) > 0
+    water_feature_set = None
+    if "water" in features:
+        water_feature_set = provider.fetch_water(bbox.west, bbox.south, bbox.east, bbox.north)
+
+    park_feature_set = None
+    if "parks" in features:
+        park_feature_set = provider.fetch_parks(bbox.west, bbox.south, bbox.east, bbox.north)
+
+    fetched_anything = (
+        (road_feature_set is not None and len(road_feature_set) > 0)
+        or (building_feature_set is not None and len(building_feature_set) > 0)
+        or (water_feature_set is not None and len(water_feature_set) > 0)
+        or (park_feature_set is not None and len(park_feature_set) > 0)
     )
     if not fetched_anything:
         raise empty_geometry(
@@ -104,6 +120,8 @@ def generate_fabric(
         request.parameters,
         road_feature_set=road_feature_set,
         building_feature_set=building_feature_set,
+        water_feature_set=water_feature_set,
+        park_feature_set=park_feature_set,
     )
     if not any(not g.is_empty for g in processed.layers.values()):
         raise empty_geometry(
@@ -150,8 +168,27 @@ def generate_mesh(
             "No building footprints were found in the selected region."
         )
 
+    # Roads/water/parks only matter for the terrain-treatment pass, so only
+    # fetch them when terrain is actually requested — keeps the flat/no-DEM
+    # path exactly as fast/network-light as before this feature existed.
+    road_feature_set = None
+    water_feature_set = None
+    park_feature_set = None
+    if request.terrain.include:
+        road_feature_set = provider.fetch_roads(
+            bbox.west, bbox.south, bbox.east, bbox.north, DEFAULT_ROAD_CLASSES
+        )
+        water_feature_set = provider.fetch_water(bbox.west, bbox.south, bbox.east, bbox.north)
+        park_feature_set = provider.fetch_parks(bbox.west, bbox.south, bbox.east, bbox.north)
+
     processed = process_fabric(
-        bbox, {"buildings"}, request.parameters, building_feature_set=building_feature_set
+        bbox,
+        {"buildings"},
+        request.parameters,
+        road_feature_set=road_feature_set,
+        building_feature_set=building_feature_set,
+        water_feature_set=water_feature_set,
+        park_feature_set=park_feature_set,
     )
     if not processed.buildings_3d:
         raise empty_geometry(
@@ -172,8 +209,19 @@ def generate_mesh(
         request.terrain.resolution_m,
         request.terrain.exaggeration,
     )
+    grid = apply_surface_treatments(
+        grid,
+        road_area=processed.road_area,
+        water_area=processed.water_area,
+        park_area=processed.park_area,
+        street_style=request.terrain.street_style,
+        street_recess_depth_m=request.terrain.street_recess_depth_m,
+    )
     terrain_mesh = build_terrain_mesh(grid, request.terrain.base_thickness_m)
 
+    # Buildings seat on the POST-treatment grid, so they correctly fuse with
+    # whatever the final surface looks like (e.g. a building at a recessed
+    # street edge or a flattened water shore) — see AGENTS.md.
     seated_buildings = [
         (footprint, height, building_base_z(footprint, grid, request.terrain.base_thickness_m))
         for footprint, height in processed.buildings_3d

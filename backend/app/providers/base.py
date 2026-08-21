@@ -48,6 +48,29 @@ class BuildingFeatureSet:
         return len(self.features)
 
 
+@dataclass
+class AreaFeature:
+    """A single water/park/wood polygon in WGS84 (lon/lat) plus its category.
+
+    Water and parks are structurally identical (a polygon + category, no
+    height) so they share this one type rather than duplicating
+    BuildingFeature's shape for no behavioral gain.
+    """
+
+    geometry: BaseGeometry  # Polygon in EPSG:4326
+    category: str  # "water" | "park"
+    name: Optional[str] = None
+
+
+@dataclass
+class AreaFeatureSet:
+    features: List[AreaFeature] = field(default_factory=list)
+    crs: str = "EPSG:4326"
+
+    def __len__(self) -> int:
+        return len(self.features)
+
+
 class GeographicDataProvider(Protocol):
     def fetch_roads(
         self,
@@ -66,4 +89,22 @@ class GeographicDataProvider(Protocol):
         east: float,
         north: float,
     ) -> BuildingFeatureSet:
+        ...
+
+    def fetch_water(
+        self,
+        west: float,
+        south: float,
+        east: float,
+        north: float,
+    ) -> AreaFeatureSet:
+        ...
+
+    def fetch_parks(
+        self,
+        west: float,
+        south: float,
+        east: float,
+        north: float,
+    ) -> AreaFeatureSet:
         ...

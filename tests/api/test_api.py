@@ -121,3 +121,47 @@ def test_generate_mesh_terrain_adds_triangles_over_flat_baseline(monkeypatch):
         json={"selection": {"type": "bbox", **BBOX}, "terrain": {"include": True}},
     )
     assert _mesh_stl_triangle_count(terrain_resp.content) > _mesh_stl_triangle_count(flat_resp.content)
+
+
+def test_generate_mesh_textured_street_style(monkeypatch):
+    monkeypatch.setattr(
+        main_module,
+        "generate_mesh",
+        lambda req: generate_mesh(req, provider=FakeProvider(), elevation_provider=FakeElevationProvider(base_elevation=15.0)),
+    )
+    resp = client.post(
+        "/api/v1/generate/mesh",
+        json={"selection": {"type": "bbox", **BBOX}, "terrain": {"include": True, "street_style": "textured"}},
+    )
+    assert resp.status_code == 200, resp.text
+    assert _mesh_stl_triangle_count(resp.content) > 0
+
+
+def test_generate_mesh_street_style_changes_geometry_not_triangle_count(monkeypatch):
+    def _generate(req):
+        return generate_mesh(req, provider=FakeProvider(), elevation_provider=FakeElevationProvider(base_elevation=15.0))
+
+    monkeypatch.setattr(main_module, "generate_mesh", _generate)
+
+    recessed = client.post(
+        "/api/v1/generate/mesh",
+        json={"selection": {"type": "bbox", **BBOX}, "terrain": {"include": True, "street_style": "recessed"}},
+    )
+    textured = client.post(
+        "/api/v1/generate/mesh",
+        json={"selection": {"type": "bbox", **BBOX}, "terrain": {"include": True, "street_style": "textured"}},
+    )
+    # apply_surface_treatments only mutates Z values, never topology, so both
+    # modes must produce the exact same triangle count for the same grid.
+    assert _mesh_stl_triangle_count(recessed.content) == _mesh_stl_triangle_count(textured.content)
+    assert recessed.content != textured.content  # but the actual geometry (Z values) differs
+
+
+def test_generate_svg_with_water_and_parks(monkeypatch):
+    monkeypatch.setattr(main_module, "generate_fabric", lambda req: generate_fabric(req, provider=FakeProvider()))
+    payload = _payload(fabric={"features": ["water", "parks"]})
+    resp = client.post("/api/v1/generate", json=payload)
+    assert resp.status_code == 200, resp.text
+    svg = resp.json()["svg"]
+    assert '<g id="water">' in svg
+    assert '<g id="parks">' in svg

@@ -9,6 +9,8 @@ import numpy as np
 from shapely.geometry import LineString, Polygon
 
 from app.providers.base import (
+    AreaFeature,
+    AreaFeatureSet,
     BuildingFeature,
     BuildingFeatureSet,
     GeographicFeatureSet,
@@ -65,6 +67,34 @@ def building_feature_set() -> BuildingFeatureSet:
     return BuildingFeatureSet(features=buildings)
 
 
+def _small_area(frac_x: float, frac_y: float, category: str) -> AreaFeatureSet:
+    """One small rectangular polygon inside BBOX, centered at the given
+    fractional position — used for both water and park fixtures, kept away
+    from the road grid (0.2/0.5/0.8) and building fixtures (0.35/0.65)."""
+    w, s, e, n = BBOX["west"], BBOX["south"], BBOX["east"], BBOX["north"]
+    dx, dy = (e - w), (n - s)
+    cx, cy = w + dx * frac_x, s + dy * frac_y
+    half_w, half_h = dx * 0.06, dy * 0.06
+    ring = [
+        (cx - half_w, cy - half_h),
+        (cx + half_w, cy - half_h),
+        (cx + half_w, cy + half_h),
+        (cx - half_w, cy + half_h),
+        (cx - half_w, cy - half_h),
+    ]
+    return AreaFeatureSet(features=[AreaFeature(Polygon(ring), category=category, name=category)])
+
+
+def water_feature_set() -> AreaFeatureSet:
+    """One rectangular "lake" polygon inside BBOX."""
+    return _small_area(0.1, 0.1, "water")
+
+
+def park_feature_set() -> AreaFeatureSet:
+    """One rectangular "park" polygon inside BBOX, non-overlapping with water."""
+    return _small_area(0.9, 0.9, "park")
+
+
 class FakeProvider:
     """A GeographicDataProvider that returns synthetic fixtures without a network."""
 
@@ -73,6 +103,12 @@ class FakeProvider:
 
     def fetch_buildings(self, west, south, east, north):
         return building_feature_set()
+
+    def fetch_water(self, west, south, east, north):
+        return water_feature_set()
+
+    def fetch_parks(self, west, south, east, north):
+        return park_feature_set()
 
 
 class FakeElevationProvider:

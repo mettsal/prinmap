@@ -15,7 +15,14 @@ from shapely.geometry import LineString, Polygon
 
 from ..config import settings
 from ..errors import provider_error
-from .base import BuildingFeature, BuildingFeatureSet, GeographicFeatureSet, RoadFeature
+from .base import (
+    AreaFeature,
+    AreaFeatureSet,
+    BuildingFeature,
+    BuildingFeatureSet,
+    GeographicFeatureSet,
+    RoadFeature,
+)
 
 # Fallback height when OSM has neither `height` nor `building:levels` (DESIGN.md
 # doesn't specify a value; ~3 storeys is a reasonable dense-urban default).
@@ -56,6 +63,33 @@ def _build_building_query(west: float, south: float, east: float, north: float) 
     return (
         "[out:json][timeout:60];"
         f'(way["building"]({south},{west},{north},{east}););'
+        "out geom;"
+    )
+
+
+def _build_water_query(west: float, south: float, east: float, north: float) -> str:
+    # Ways only, same convention as buildings/roads — large water bodies are
+    # frequently mapped as multipolygon relations in real OSM data more often
+    # than buildings are, so this limitation bites harder here (see AGENTS.md).
+    bbox = f"{south},{west},{north},{east}"
+    return (
+        "[out:json][timeout:60];"
+        f'(way["natural"="water"]({bbox});'
+        f'way["waterway"="riverbank"]({bbox});'
+        f'way["landuse"="reservoir"]({bbox}););'
+        "out geom;"
+    )
+
+
+def _build_parks_query(west: float, south: float, east: float, north: float) -> str:
+    # `landuse=grass`/`meadow` intentionally excluded from v1 — would dominate
+    # too many selections; easy opt-in later if wanted.
+    bbox = f"{south},{west},{north},{east}"
+    return (
+        "[out:json][timeout:60];"
+        f'(way["leisure"="park"]({bbox});'
+        f'way["natural"="wood"]({bbox});'
+        f'way["landuse"="forest"]({bbox}););'
         "out geom;"
     )
 
@@ -106,6 +140,28 @@ class OSMProvider:
         query = _build_building_query(west, south, east, north)
         payload = self._query_overpass(query)
         return _parse_buildings(payload)
+
+    def fetch_water(
+        self,
+        west: float,
+        south: float,
+        east: float,
+        north: float,
+    ) -> AreaFeatureSet:
+        query = _build_water_query(west, south, east, north)
+        payload = self._query_overpass(query)
+        return _parse_areas(payload, category="water")
+
+    def fetch_parks(
+        self,
+        west: float,
+        south: float,
+        east: float,
+        north: float,
+    ) -> AreaFeatureSet:
+        query = _build_parks_query(west, south, east, north)
+        payload = self._query_overpass(query)
+        return _parse_areas(payload, category="park")
 
 
 def _parse_roads(payload: dict) -> GeographicFeatureSet:
@@ -189,3 +245,27 @@ def _parse_buildings(payload: dict) -> BuildingFeatureSet:
             )
         )
     return BuildingFeatureSet(features=features)
+
+
+def _parse_areas(payload: dict, category: str) -> AreaFeatureSet:
+    """Generic closed-ring-way parser shared by fetch_water/fetch_parks —
+    same validity checks as _parse_buildings, minus height parsing."""
+    features: list[AreaFeature] = []
+    for element in payload.get("elements", []):
+        if element.get("type") != "way":
+            continue
+        geometry = element.get("geometry")
+        if not geometry or len(geometry) < 4:
+            continue
+        coords = [(pt["lon"], pt["lat"]) for pt in geometry]
+        if coords[0] != coords[-1]:
+            continue  # not a closed ring -> not a usable polygon
+        tags = element.get("tags", {})
+        try:
+            polygon = Polygon(coords)
+        except Exception:  # pragma: no cover - malformed OSM geometry
+            continue
+        if not polygon.is_valid or polygon.is_empty:
+            continue
+        features.append(AreaFeature(geometry=polygon, category=category, name=tags.get("name")))
+    return AreaFeatureSet(features=features)

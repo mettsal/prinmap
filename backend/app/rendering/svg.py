@@ -4,8 +4,9 @@ Consumes a ProcessedFabric (projected metres, one geometry per requested
 layer) + a FabricStyle and emits an SVG string. Normalizes the projected frame
 into the canvas, preserving aspect ratio, and flips Y (geographic north is up;
 SVG y grows down). Layers are drawn in a fixed painter's order — blocks (base
-mass), then buildings (finer mass on top), then roads (cuts/lines on top) —
-and a layer is only emitted if it was actually requested and non-empty.
+mass), then parks/water (ground cover), then buildings (finer mass), then
+roads (cuts/lines on top) — and a layer is only emitted if it was actually
+requested and non-empty.
 """
 
 from __future__ import annotations
@@ -17,9 +18,14 @@ from ..geometry.collections import iter_polygons
 from ..geometry.processing import ProcessedFabric
 from .styles import FabricStyle
 
-# (layer key, style attribute name) in paint order, back to front.
+# (layer key, style attribute name) in paint order, back to front. Parks then
+# water: water is drawn after (so it visually wins on the rare OSM overlap),
+# both below buildings/roads which should read as foreground regardless of
+# what ground cover they sit on.
 _LAYER_ORDER = [
     ("blocks", "block_fill"),
+    ("parks", "park_fill"),
+    ("water", "water_fill"),
     ("buildings", "building_fill"),
     ("roads", "road"),
 ]

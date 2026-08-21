@@ -48,6 +48,7 @@ export default function App() {
     resolution_m: 10,
     base_thickness_m: 3,
     exaggeration: 1,
+    street_style: "recessed",
   });
   const [flyTarget, setFlyTarget] = useState<FlyTarget>(null);
 
