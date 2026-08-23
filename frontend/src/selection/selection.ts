@@ -50,3 +50,14 @@ export function bboxAreaKm2(bbox: BBoxSelection): number {
   const w = (bbox.east - bbox.west) * kmPerDegLon;
   return Math.abs(w * h);
 }
+
+/** Longest bbox edge in metres (equirectangular approximation) — the dimension
+ * the STL export scales to `print_size_mm`, so the UI can preview the print
+ * scale and street detail before exporting. Mirrors the backend's
+ * geometry/mesh_utils.py::print_scale_mm_per_m reference (frame longest edge). */
+export function bboxLongestEdgeM(bbox: BBoxSelection): number {
+  const midLat = ((bbox.south + bbox.north) / 2) * (Math.PI / 180);
+  const w = Math.abs(bbox.east - bbox.west) * 111320 * Math.cos(midLat);
+  const h = Math.abs(bbox.north - bbox.south) * 110574;
+  return Math.max(w, h);
+}

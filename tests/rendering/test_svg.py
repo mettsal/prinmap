@@ -2,12 +2,26 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 
+import pytest
+
 from app.geometry.processing import process_fabric
 from app.models.schemas import BBoxSelection, Parameters
-from app.rendering.styles import get_style
+from app.rendering.styles import PRESETS, get_style
 from app.rendering.svg import render_svg
 
 from ..fixtures import BBOX, building_feature_set, grid_feature_set, park_feature_set, water_feature_set
+
+
+def _luminance(hex_color: str) -> float:
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+
+# Minimum perceptual gap (0..255 luminance) between a ground-cover fill and the
+# block fill it sits on. Below this, water/parks read as empty block/background
+# — the "no water or parks visible" regression this guards against.
+_MIN_FILL_GAP = 35.0
 
 
 def _render(preset: str = "dark-minimal", size: int = 800, features=None):
@@ -74,6 +88,29 @@ def test_water_and_parks_absent_when_not_requested():
     root = ET.fromstring(svg)
     group_ids = {g.attrib.get("id") for g in root if g.tag.endswith("g")}
     assert "water" not in group_ids and "parks" not in group_ids
+
+
+@pytest.mark.parametrize("preset", sorted(PRESETS))
+def test_water_and_park_fills_are_distinct_from_blocks(preset):
+    # Presence of a <g id="water"> group is not enough — the fill must actually
+    # be distinguishable from the block fill it's painted over, in EVERY preset.
+    style = PRESETS[preset]
+    block = _luminance(style.block_fill)
+    assert abs(_luminance(style.water_fill) - block) >= _MIN_FILL_GAP, preset
+    assert abs(_luminance(style.park_fill) - block) >= _MIN_FILL_GAP, preset
+
+
+@pytest.mark.parametrize("preset", sorted(PRESETS))
+def test_water_and_park_paths_have_an_outline(preset):
+    # Water/parks carry a stroke so the region stays legible even when the fill
+    # is a near-neighbour of block_fill (belt-and-suspenders on top of the gap).
+    svg = _render(preset, features={"water", "parks"})
+    root = ET.fromstring(svg)
+    for group_id in ("water", "parks"):
+        group = next(g for g in root if g.tag.endswith("g") and g.attrib.get("id") == group_id)
+        path = next(p for p in group if p.tag.endswith("path"))
+        assert path.attrib.get("stroke"), f"{preset}/{group_id} has no stroke"
+        assert float(path.attrib.get("stroke-width", 0)) > 0
 
 
 def test_full_layer_paint_order_all_five():

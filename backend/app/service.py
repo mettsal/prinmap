@@ -11,7 +11,7 @@ import uuid
 from .config import settings
 from .errors import empty_geometry, invalid_selection, selection_too_large
 from .geometry.extrude import build_scene_mesh, build_scene_mesh_with_base
-from .geometry.mesh_utils import merge_meshes
+from .geometry.mesh_utils import merge_meshes, print_scale_mm_per_m, scale_mesh_to_print
 from .geometry.processing import process_fabric
 from .geometry.projection import projection_for
 from .geometry.terrain import (
@@ -143,17 +143,27 @@ def generate_fabric(
     )
 
 
+# Smallest common surface road width (metres) — a residential street — used
+# only to warn when the chosen print scale makes fine streets thinner than one
+# extruded line (see rendering/styles.py::ROAD_WIDTHS).
+_TYPICAL_MINOR_ROAD_WIDTH_M = 2.5
+
+
 def generate_mesh(
     request: GenerateMeshRequest,
     provider: GeographicDataProvider | None = None,
     elevation_provider: ElevationProvider | None = None,
-) -> bytes:
-    """Fetch building footprints and extrude them into a watertight STL mesh.
+) -> tuple[bytes, dict]:
+    """Fetch building footprints and extrude them into a watertight STL mesh,
+    emitted **pre-scaled to a real printed size** (`terrain.print_size_mm`).
 
     When `terrain.include` (default True), buildings are seated on real
     ground elevation and fused onto a solid terrain slab with a flat bottom
     (printable as one piece). When False, buildings sit on a flat z=0 plane
     with no terrain fetch (faster, network-lighter iteration path).
+
+    Returns `(stl_bytes, print_info)` — `print_info` carries the derived scale
+    and any printability warnings (surfaced to the client as response headers).
     """
     bbox = request.selection
     _validate_bbox(bbox)
@@ -195,35 +205,56 @@ def generate_mesh(
             "The selected buildings produced no extrudable mesh at this detail level."
         )
 
-    if not request.terrain.include:
+    terrain = request.terrain
+    minx, miny, _, _ = processed.frame.bounds
+    mm_per_m = print_scale_mm_per_m(processed.frame.bounds, terrain.print_size_mm)
+    print_info = _print_info(processed.frame.bounds, mm_per_m, terrain, request.parameters)
+
+    if not terrain.include:
         vertices, faces = build_scene_mesh(processed.buildings_3d)
         if len(faces) == 0:
             raise empty_geometry("Mesh extrusion produced no triangles.")
-        return write_stl_binary(vertices, faces)
+        vertices = scale_mesh_to_print(vertices, mm_per_m, minx, miny)
+        return write_stl_binary(vertices, faces), print_info
+
+    # Author every treatment in printed-millimetres, clamp to a printable floor
+    # (>= 2 layer heights so it never lands below the printer's resolution),
+    # then convert to the world metres apply_surface_treatments/build_terrain_mesh
+    # operate in. After the whole mesh is scaled by mm_per_m these come back out
+    # at their intended printed depth.
+    min_relief_mm = 2.0 * terrain.layer_height_mm
+
+    def _world_m(printed_mm: float) -> float:
+        return max(printed_mm, min_relief_mm) / mm_per_m
+
+    base_thickness_m = terrain.base_thickness_mm / mm_per_m  # plinth: no relief floor needed
 
     elevation_provider = elevation_provider or TerrariumElevationProvider()
     grid = sample_elevation_grid(
         processed.frame.bounds,
         processed.projection,
         elevation_provider,
-        request.terrain.resolution_m,
-        request.terrain.exaggeration,
+        terrain.resolution_m,
+        terrain.exaggeration,
     )
     grid = apply_surface_treatments(
         grid,
         road_area=processed.road_area,
         water_area=processed.water_area,
         park_area=processed.park_area,
-        street_style=request.terrain.street_style,
-        street_recess_depth_m=request.terrain.street_recess_depth_m,
+        street_style=terrain.street_style,
+        street_recess_depth_m=_world_m(terrain.street_recess_depth_mm),
+        street_texture_amplitude_m=_world_m(terrain.street_texture_amplitude_mm),
+        park_texture_amplitude_m=_world_m(terrain.park_texture_amplitude_mm),
+        water_submersion_m=_world_m(terrain.water_submersion_mm),
     )
-    terrain_mesh = build_terrain_mesh(grid, request.terrain.base_thickness_m)
+    terrain_mesh = build_terrain_mesh(grid, base_thickness_m)
 
     # Buildings seat on the POST-treatment grid, so they correctly fuse with
     # whatever the final surface looks like (e.g. a building at a recessed
     # street edge or a flattened water shore) — see AGENTS.md.
     seated_buildings = [
-        (footprint, height, building_base_z(footprint, grid, request.terrain.base_thickness_m))
+        (footprint, height, building_base_z(footprint, grid, base_thickness_m))
         for footprint, height in processed.buildings_3d
     ]
     buildings_mesh = build_scene_mesh_with_base(seated_buildings)
@@ -232,4 +263,35 @@ def generate_mesh(
     if len(faces) == 0:
         raise empty_geometry("Mesh extrusion produced no triangles.")
 
-    return write_stl_binary(vertices, faces)
+    vertices = scale_mesh_to_print(vertices, mm_per_m, minx, miny)
+    return write_stl_binary(vertices, faces), print_info
+
+
+def _print_info(frame_bounds, mm_per_m, terrain, parameters) -> dict:
+    """Derive human-facing print-scale facts + printability warnings.
+
+    Warnings cover the one thing the print-scale fix *can't* rescue: horizontal
+    features (fine streets) that, once scaled, are thinner than a single nozzle
+    line — the user must pick a smaller selection or a larger print size.
+    """
+    minx, miny, maxx, maxy = frame_bounds
+    scale_denominator = 1000.0 / mm_per_m if mm_per_m else 0.0  # world_mm : print_mm
+    width_mm = (maxx - minx) * mm_per_m
+    height_mm = (maxy - miny) * mm_per_m
+
+    warnings: list[str] = []
+    minor_road_mm = _TYPICAL_MINOR_ROAD_WIDTH_M * max(0.1, parameters.road_width) * mm_per_m
+    if terrain.include and minor_road_mm < terrain.nozzle_diameter_mm:
+        # Kept ASCII-only: this string is emitted as an HTTP header (latin-1).
+        warnings.append(
+            f"At 1:{round(scale_denominator):,}, minor streets are ~{minor_road_mm:.2f} mm wide, "
+            f"below the {terrain.nozzle_diameter_mm} mm nozzle. Fine streets may not print; "
+            f"pick a smaller area or a larger print size."
+        )
+
+    return {
+        "print_size_mm": terrain.print_size_mm,
+        "scale_denominator": round(scale_denominator),
+        "model_footprint_mm": [round(width_mm, 1), round(height_mm, 1)],
+        "warnings": warnings,
+    }

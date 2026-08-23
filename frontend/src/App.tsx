@@ -46,9 +46,19 @@ export default function App() {
   const [terrainParams, setTerrainParams] = useState<TerrainParams>({
     include: true,
     resolution_m: 10,
-    base_thickness_m: 3,
     exaggeration: 1,
     street_style: "recessed",
+    // Print scale (mm). Defaults tuned for a Bambu Lab A1 Mini (180 mm bed,
+    // 0.4 mm nozzle, 0.2 mm layers) so treatments actually print. 150 leaves a
+    // margin on the bed (180 was edge-to-edge).
+    print_size_mm: 150,
+    nozzle_diameter_mm: 0.4,
+    layer_height_mm: 0.2,
+    base_thickness_mm: 3,
+    street_recess_depth_mm: 0.6,
+    street_texture_amplitude_mm: 0.4,
+    park_texture_amplitude_mm: 0.4,
+    water_submersion_mm: 0.5,
   });
   const [flyTarget, setFlyTarget] = useState<FlyTarget>(null);
 
@@ -74,9 +84,14 @@ export default function App() {
     if (!selection) return;
     setMeshStatus({ status: "exporting" });
     try {
-      const blob = await generateMesh(selection, params, terrainParams);
+      const { blob, info } = await generateMesh(selection, params, terrainParams);
       downloadBlob(blob, "urban-fabric.stl");
-      setMeshStatus({ status: "idle" });
+      setMeshStatus({
+        status: "success",
+        scale: info.scale,
+        footprintMm: info.footprintMm,
+        warnings: info.warnings,
+      });
     } catch (e) {
       setMeshStatus({
         status: "error",

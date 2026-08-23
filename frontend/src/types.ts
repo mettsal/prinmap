@@ -29,7 +29,16 @@ export type GenerationState =
 export type MeshStatus =
   | { status: "idle" }
   | { status: "exporting" }
+  | { status: "success"; scale: string; footprintMm: string; warnings: string }
   | { status: "error"; message: string };
+
+// Print-scale facts returned as response headers by the mesh endpoint.
+export type MeshPrintInfo = {
+  scale: string; // e.g. "1:17006"
+  sizeMm: string;
+  footprintMm: string; // e.g. "180x162.5"
+  warnings: string;
+};
 
 export type GenerateResponse = {
   job_id: string;
@@ -51,11 +60,21 @@ export type GenerateParams = {
   road_width: number;
 };
 
-// Terrain relief for the STL export only — never affects the SVG endpoint.
+// Terrain relief + physical print-scale for the STL export only — never
+// affects the SVG endpoint. Depths are in PRINTED millimetres; the mesh is
+// emitted pre-scaled to `print_size_mm` on its longest edge.
 export type TerrainParams = {
   include: boolean;
   resolution_m: number;
-  base_thickness_m: number;
   exaggeration: number; // vertical scale on relief only, not building heights
   street_style: StreetStyle;
+  // Physical print scale (millimetres).
+  print_size_mm: number; // target longest edge of the printed model
+  nozzle_diameter_mm: number;
+  layer_height_mm: number;
+  base_thickness_mm: number;
+  street_recess_depth_mm: number;
+  street_texture_amplitude_mm: number;
+  park_texture_amplitude_mm: number;
+  water_submersion_mm: number;
 };

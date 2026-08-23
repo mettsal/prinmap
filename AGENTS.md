@@ -35,8 +35,23 @@ surface + flat base plinth) → seat each building's base_z on that
 POST-treatment surface (min sampled corner, sunk slightly to guarantee
 fusion) → triangulate footprint (earcut, handles courtyard holes) → extrude
 each building to a closed prism → merge terrain + all buildings into one mesh
-→ write binary STL`. With `terrain.include=false`, buildings extrude straight
-onto a flat z=0 plane (no DEM/road/water/park fetch — faster, network-lighter).
+→ scale the whole mesh to the physical print size → write binary STL`. With
+`terrain.include=false`, buildings extrude straight onto a flat z=0 plane (no
+DEM/road/water/park fetch — faster, network-lighter) and are scaled the same way.
+
+**Print scale (why the STL is emitted in millimetres):** all geometry is built
+in world metres, but surface treatments are authored in *printed millimetres*
+(`terrain.*_mm`) and back-converted to world metres via a scale derived from
+`terrain.print_size_mm` (the model's target longest edge) and the frame's
+longest world edge (`geometry/mesh_utils.py::print_scale_mm_per_m`). The finished
+mesh is then recentred to the origin and multiplied by that same scale
+(`scale_mesh_to_print`) so the exported STL is print-ready at `print_size_mm`
+without any slicer scaling. This is the fix for the original "nothing prints"
+bug: at whole-district scales a 0.6 m real recess is ~0.03 mm after slicer
+scaling (sub-layer, invisible); expressed as 0.6 *printed* mm it survives. Depths
+are clamped to a printable floor (>= 2 layer heights). Horizontal features that
+still fall below one nozzle width (fine streets on a large selection) can't be
+rescued in Z — the service reports this as a warning (see below), not silently.
 
 ## Layout
 
@@ -71,9 +86,11 @@ backend/app/
                       apply_surface_treatments (roads/water/parks Z-edits)
   rendering/
     styles.py         FabricStyle presets (background/road/block_fill/
-                      building_fill/water_fill/park_fill)
+                      building_fill/water_fill/park_fill + water_stroke/
+                      park_stroke/area_stroke_width — water/parks are outlined
+                      so they stay legible when their fill is near block_fill)
     svg.py             multi-layer SVG renderer (blocks -> parks -> water ->
-                      buildings -> roads)
+                      buildings -> roads); water/parks drawn with fill + stroke
     stl.py             hand-rolled binary STL writer (no trimesh/numpy-stl)
 frontend/src/
   map/               MapLibre viewport, rectangle selection, basemap styles
@@ -131,9 +148,32 @@ tests/               geometry / rendering / providers / api (OSM mocked — no n
   should follow this same pattern.
 - **Street/park texture pitch is tied to `resolution_m`** (grid-index-parity
   checkerboard/stripe patterns, one bump per grid cell) — at the default 10m
-  spacing this reads as coarse bumps, not fine ridges. No independent
-  physical-scale control exists yet; finer texture currently requires a
-  finer `resolution_m` (more compute). Revisit after physical print feedback.
+  spacing, once scaled to an 180mm print, this reads as ~1mm bumps. Texture
+  *amplitude* (height) IS now physically controlled — authored in printed-mm
+  (`street_texture_amplitude_mm`/`park_texture_amplitude_mm`) and clamped to a
+  printable floor; only the horizontal *pitch* still requires a finer
+  `resolution_m` (more compute) to tighten. Revisit pitch after print feedback.
+- **STL is emitted pre-scaled to `terrain.print_size_mm`** (mm), NOT in world
+  metres. All treatment depths are printed-mm (`base_thickness_mm`,
+  `street_recess_depth_mm`, `street_texture_amplitude_mm`,
+  `park_texture_amplitude_mm`, `water_submersion_mm`), converted to world-m via
+  `print_scale_mm_per_m` before `apply_surface_treatments`/`build_terrain_mesh`,
+  then the merged mesh is recentred+scaled by the same factor. `apply_surface_
+  treatments` itself still takes world-m depths (its module constants remain as
+  fallbacks) — the mm→m conversion lives in `service.py::generate_mesh`.
+- **`generate_mesh` returns `(stl_bytes, print_info)`**, not bare bytes. The
+  endpoint surfaces `print_info` as `X-Print-*` response headers (scale,
+  physical footprint, printability warnings) — `X-Print-Warnings` fires when a
+  minor street, once scaled, is thinner than one nozzle width. Header strings
+  must stay ASCII/latin-1 (no em-dashes) or Starlette raises on encode.
+- **Water/parks must be *visibly* distinct, not just present.** They render as a
+  distinct fill PLUS an outline (`water_stroke`/`park_stroke`), and every preset
+  keeps the water/park fill luminance ≥ ~35 away from `block_fill` — enforced by
+  `tests/rendering/test_svg.py` (a bare `<g id="water">`-present assertion was
+  the reason "no water/parks" shipped invisibly, worst in monochrome). The
+  frontend also shows a **live pre-export estimate** (scale + minor-street mm)
+  in `Controls.tsx`, mirroring `service.py::_print_info`, so detail loss is
+  visible before the STL is exported, not only in the post-export warning.
 - **Water is flattened per connected polygon component**, not by one global
   min-of-boundary across all water in the selection — each lake/river segment
   gets its own flat elevation (min of that component's own boundary vertices
@@ -208,8 +248,13 @@ pytest                       # tests/conftest.py puts backend/ on sys.path
 - The 3D mesh endpoint (`/api/v1/generate/mesh`) is buildings-only and has its
   own lightweight request schema (`GenerateMeshRequest` — no `fabric`/`style`,
   plus a `terrain: TerrainParameters` block: `include` (default `true`),
-  `resolution_m`, `base_thickness_m`, `exaggeration`, `street_style`
-  (`"recessed"|"textured"`, default `"recessed"`), `street_recess_depth_m`).
+  `resolution_m`, `exaggeration`, `street_style` (`"recessed"|"textured"`,
+  default `"recessed"`), the print-scale block `print_size_mm` (default 150 —
+  leaves ~15 mm margin on the 180 mm A1 Mini bed; UI caps it at 180),
+  `nozzle_diameter_mm`, `layer_height_mm`, and the printed-mm
+  depths `base_thickness_mm`, `street_recess_depth_mm`,
+  `street_texture_amplitude_mm`, `park_texture_amplitude_mm`,
+  `water_submersion_mm`).
   There's no separate include-toggle for water/parks — whenever
   `terrain.include=True` they're fetched and treated if present in the
   selection (empty masks are just a no-op); `terrain.include=False` skips

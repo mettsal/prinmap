@@ -18,16 +18,17 @@ from ..geometry.collections import iter_polygons
 from ..geometry.processing import ProcessedFabric
 from .styles import FabricStyle
 
-# (layer key, style attribute name) in paint order, back to front. Parks then
-# water: water is drawn after (so it visually wins on the rare OSM overlap),
-# both below buildings/roads which should read as foreground regardless of
-# what ground cover they sit on.
+# (layer key, fill attribute, stroke attribute or None) in paint order, back to
+# front. Parks then water: water is drawn after (so it visually wins on the rare
+# OSM overlap), both below buildings/roads which should read as foreground
+# regardless of what ground cover they sit on. Water/parks carry an outline so
+# they stay legible even when their fill is close to block_fill.
 _LAYER_ORDER = [
-    ("blocks", "block_fill"),
-    ("parks", "park_fill"),
-    ("water", "water_fill"),
-    ("buildings", "building_fill"),
-    ("roads", "road"),
+    ("blocks", "block_fill", None),
+    ("parks", "park_fill", "park_stroke"),
+    ("water", "water_fill", "water_stroke"),
+    ("buildings", "building_fill", None),
+    ("roads", "road", None),
 ]
 
 
@@ -73,17 +74,24 @@ def render_svg(processed: ProcessedFabric, style: FabricStyle, size: int = 1600)
         "  </g>\n"
     ]
 
-    for layer_key, style_attr in _LAYER_ORDER:
+    for layer_key, fill_attr, stroke_attr in _LAYER_ORDER:
         geometry = processed.layers.get(layer_key)
         if geometry is None or geometry.is_empty:
             continue
         path_d = _geometry_to_path(geometry, project)
         if not path_d:
             continue
-        fill = escape(getattr(style, style_attr))
+        fill = escape(getattr(style, fill_attr))
+        stroke_svg = ""
+        if stroke_attr is not None:
+            stroke = escape(getattr(style, stroke_attr))
+            stroke_svg = (
+                f' stroke="{stroke}" stroke-width="{style.area_stroke_width:g}" '
+                f'stroke-linejoin="round"'
+            )
         groups.append(
             f'  <g id="{layer_key}">\n'
-            f'    <path d="{path_d}" fill="{fill}" fill-rule="evenodd" />\n'
+            f'    <path d="{path_d}" fill="{fill}" fill-rule="evenodd"{stroke_svg} />\n'
             "  </g>\n"
         )
 

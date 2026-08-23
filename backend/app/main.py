@@ -53,12 +53,19 @@ def generate(request: GenerateRequest) -> GenerateResponse:
 
 @app.post("/api/v1/generate/mesh")
 def generate_mesh_endpoint(request: GenerateMeshRequest) -> Response:
-    stl_bytes = generate_mesh(request)
-    return Response(
-        content=stl_bytes,
-        media_type="model/stl",
-        headers={"Content-Disposition": 'attachment; filename="urban-fabric.stl"'},
-    )
+    stl_bytes, print_info = generate_mesh(request)
+    headers = {
+        "Content-Disposition": 'attachment; filename="urban-fabric.stl"',
+        "X-Print-Scale": f"1:{print_info['scale_denominator']}",
+        "X-Print-Size-Mm": str(print_info["print_size_mm"]),
+        "X-Print-Footprint-Mm": "x".join(str(v) for v in print_info["model_footprint_mm"]),
+        "X-Print-Warnings": " | ".join(print_info["warnings"]),
+        # Let the browser (a cross-origin fetch during dev) read the X-* headers.
+        "Access-Control-Expose-Headers": (
+            "X-Print-Scale, X-Print-Size-Mm, X-Print-Footprint-Mm, X-Print-Warnings"
+        ),
+    }
+    return Response(content=stl_bytes, media_type="model/stl", headers=headers)
 
 
 @app.get("/api/v1/geocode", response_model=GeocodeResponse)

@@ -192,22 +192,26 @@ def _water_component_flat_z(polygon: Polygon, grid: ElevationGrid) -> float:
     return min(grid.sample_bilinear(x, y) for x, y in coords)
 
 
-def _street_texture(x: np.ndarray, y: np.ndarray, grid: ElevationGrid) -> np.ndarray:
+def _street_texture(
+    x: np.ndarray, y: np.ndarray, grid: ElevationGrid, amplitude_m: float
+) -> np.ndarray:
     """Checkerboard bump pattern (period 2 grid cells) — single-valued
     heightfield, no overhangs. Pitch is tied to the grid's own resolution_m
     (one bump per cell): coarse at the default 10m spacing. See AGENTS.md."""
     ix = np.searchsorted(grid.xs, x)
     iy = np.searchsorted(grid.ys, y)
-    return np.where((ix + iy) % 2 == 0, STREET_TEXTURE_AMPLITUDE_M, 0.0)
+    return np.where((ix + iy) % 2 == 0, amplitude_m, 0.0)
 
 
-def _park_texture(x: np.ndarray, y: np.ndarray, grid: ElevationGrid) -> np.ndarray:
+def _park_texture(
+    x: np.ndarray, y: np.ndarray, grid: ElevationGrid, amplitude_m: float
+) -> np.ndarray:
     """Diagonal-stripe bump pattern (period 3 grid cells) — deliberately
     distinct from the street checkerboard (different period, same axis-
     aligned index scheme) so the two read as different textures."""
     ix = np.searchsorted(grid.xs, x)
     iy = np.searchsorted(grid.ys, y)
-    return np.where((ix + iy) % 3 == 0, PARK_TEXTURE_AMPLITUDE_M, 0.0)
+    return np.where((ix + iy) % 3 == 0, amplitude_m, 0.0)
 
 
 def apply_surface_treatments(
@@ -217,6 +221,9 @@ def apply_surface_treatments(
     park_area: BaseGeometry,
     street_style: Literal["recessed", "textured"],
     street_recess_depth_m: float = STREET_RECESS_DEPTH_M,
+    street_texture_amplitude_m: float = STREET_TEXTURE_AMPLITUDE_M,
+    park_texture_amplitude_m: float = PARK_TEXTURE_AMPLITUDE_M,
+    water_submersion_m: float = WATER_SUBMERSION_M,
 ) -> ElevationGrid:
     """Mutate a *copy* of grid.elevations per node, based on which mask(s)
     contain that node — applied BEFORE build_terrain_mesh, never by touching
@@ -224,6 +231,11 @@ def apply_surface_treatments(
     of whatever Z values are already in the grid, watertightness stays
     guaranteed "for free": only Z values change here, never triangle
     connectivity.
+
+    All depths are in world metres. Callers (service.py) derive them from the
+    user's printed-millimetre parameters and the model's print scale, so the
+    magnitudes here are whatever survives at the target physical resolution —
+    the module-level constants remain only as sane fallbacks/defaults.
 
     Overlap priority: water > road > park — each node gets exactly one
     treatment (masks are made mutually exclusive before applying), not a
@@ -241,13 +253,15 @@ def apply_surface_treatments(
     park_only = park_mask & ~road_mask & ~water_mask
 
     if park_only.any():
-        zr[park_only] += _park_texture(xr[park_only], yr[park_only], grid)
+        zr[park_only] += _park_texture(xr[park_only], yr[park_only], grid, park_texture_amplitude_m)
 
     if road_only.any():
         if street_style == "recessed":
             zr[road_only] -= street_recess_depth_m
         else:
-            zr[road_only] += _street_texture(xr[road_only], yr[road_only], grid)
+            zr[road_only] += _street_texture(
+                xr[road_only], yr[road_only], grid, street_texture_amplitude_m
+            )
 
     # Flatten per connected water component (not one global min-of-boundary
     # across all water) so one low-lying lake elsewhere in the selection
@@ -256,7 +270,7 @@ def apply_surface_treatments(
         poly_mask = _contains_mask(water_poly, xr, yr)
         if not poly_mask.any():
             continue
-        flat_z = _water_component_flat_z(water_poly, grid) - WATER_SUBMERSION_M
+        flat_z = _water_component_flat_z(water_poly, grid) - water_submersion_m
         zr[poly_mask] = flat_z
 
     return ElevationGrid(xs=grid.xs, ys=grid.ys, elevations=zr.reshape(grid.elevations.shape))

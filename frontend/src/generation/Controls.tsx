@@ -1,4 +1,4 @@
-import { bboxAreaKm2 } from "../selection/selection";
+import { bboxAreaKm2, bboxLongestEdgeM } from "../selection/selection";
 import type {
   BBoxSelection,
   FabricFeature,
@@ -65,6 +65,18 @@ export default function Controls(props: Props) {
   const busy = generation.status === "generating";
   const meshBusy = meshStatus.status === "exporting";
   const area = selection ? bboxAreaKm2(selection) : null;
+
+  // Live pre-export print estimate — mirrors the backend's _print_info formula
+  // so scale + street-detail loss are visible *before* exporting the STL.
+  const longestEdgeM = selection ? bboxLongestEdgeM(selection) : null;
+  const printScaleDenom = longestEdgeM
+    ? Math.round((longestEdgeM * 1000) / terrainParams.print_size_mm)
+    : null;
+  const minorRoadMm = longestEdgeM
+    ? (2.5 * params.road_width * terrainParams.print_size_mm) / longestEdgeM
+    : null;
+  const streetsTooThin =
+    minorRoadMm !== null && minorRoadMm < terrainParams.nozzle_diameter_mm;
 
   return (
     <div className="controls">
@@ -189,19 +201,50 @@ export default function Controls(props: Props) {
           Include terrain relief + solid base
         </label>
 
+        <label className="slider">
+          Print size (longest edge){" "}
+          <span className="muted">{terrainParams.print_size_mm.toFixed(0)} mm</span>
+          <input
+            type="range"
+            min={40}
+            max={180}
+            step={1}
+            value={terrainParams.print_size_mm}
+            onChange={(e) =>
+              onTerrainParams({ ...terrainParams, print_size_mm: Number(e.target.value) })
+            }
+          />
+        </label>
+
+        {printScaleDenom !== null && (
+          <p className="readout muted">
+            Scale ≈ 1:{printScaleDenom.toLocaleString()} · minor streets ≈{" "}
+            {minorRoadMm!.toFixed(2)} mm
+            {streetsTooThin && (
+              <>
+                <br />
+                <span className="status status-error">
+                  ⚠ Below the {terrainParams.nozzle_diameter_mm} mm nozzle — fine streets
+                  may not print. Select a smaller area or increase print size.
+                </span>
+              </>
+            )}
+          </p>
+        )}
+
         {terrainParams.include && (
           <>
             <label className="slider">
               Base thickness{" "}
-              <span className="muted">{terrainParams.base_thickness_m.toFixed(1)} m</span>
+              <span className="muted">{terrainParams.base_thickness_mm.toFixed(1)} mm</span>
               <input
                 type="range"
-                min={1}
-                max={15}
+                min={0.5}
+                max={10}
                 step={0.5}
-                value={terrainParams.base_thickness_m}
+                value={terrainParams.base_thickness_mm}
                 onChange={(e) =>
-                  onTerrainParams({ ...terrainParams, base_thickness_m: Number(e.target.value) })
+                  onTerrainParams({ ...terrainParams, base_thickness_mm: Number(e.target.value) })
                 }
               />
             </label>
@@ -233,6 +276,82 @@ export default function Controls(props: Props) {
                 <option value="textured">Textured (embossed surface)</option>
               </select>
             </label>
+
+            {terrainParams.street_style === "recessed" ? (
+              <label className="slider">
+                Street recess depth{" "}
+                <span className="muted">{terrainParams.street_recess_depth_mm.toFixed(1)} mm</span>
+                <input
+                  type="range"
+                  min={0.2}
+                  max={2}
+                  step={0.1}
+                  value={terrainParams.street_recess_depth_mm}
+                  onChange={(e) =>
+                    onTerrainParams({
+                      ...terrainParams,
+                      street_recess_depth_mm: Number(e.target.value),
+                    })
+                  }
+                />
+              </label>
+            ) : (
+              <label className="slider">
+                Street texture height{" "}
+                <span className="muted">
+                  {terrainParams.street_texture_amplitude_mm.toFixed(1)} mm
+                </span>
+                <input
+                  type="range"
+                  min={0.2}
+                  max={2}
+                  step={0.1}
+                  value={terrainParams.street_texture_amplitude_mm}
+                  onChange={(e) =>
+                    onTerrainParams({
+                      ...terrainParams,
+                      street_texture_amplitude_mm: Number(e.target.value),
+                    })
+                  }
+                />
+              </label>
+            )}
+
+            <label className="slider">
+              Park texture height{" "}
+              <span className="muted">{terrainParams.park_texture_amplitude_mm.toFixed(1)} mm</span>
+              <input
+                type="range"
+                min={0.2}
+                max={2}
+                step={0.1}
+                value={terrainParams.park_texture_amplitude_mm}
+                onChange={(e) =>
+                  onTerrainParams({
+                    ...terrainParams,
+                    park_texture_amplitude_mm: Number(e.target.value),
+                  })
+                }
+              />
+            </label>
+
+            <label className="slider">
+              Water depth{" "}
+              <span className="muted">{terrainParams.water_submersion_mm.toFixed(1)} mm</span>
+              <input
+                type="range"
+                min={0.2}
+                max={3}
+                step={0.1}
+                value={terrainParams.water_submersion_mm}
+                onChange={(e) =>
+                  onTerrainParams({
+                    ...terrainParams,
+                    water_submersion_mm: Number(e.target.value),
+                  })
+                }
+              />
+            </label>
           </>
         )}
 
@@ -241,9 +360,22 @@ export default function Controls(props: Props) {
         </button>
         <p className="readout muted">
           {terrainParams.include
-            ? "Extrudes OSM building footprints (default ~9 m when unknown), fused onto real terrain relief with a solid flat base. Streets, water, and parks/woods are differentiated by shape/texture — ready to slice/print as one piece."
-            : "Extrudes OSM building footprints (default ~9 m when unknown) onto a flat ground plane, no terrain — faster, network-lighter."}
+            ? "Extrudes OSM building footprints (default ~9 m when unknown), fused onto real terrain relief with a solid flat base. Streets, water, and parks/woods are differentiated by shape/texture. Depths are in printed mm; the model is exported pre-scaled to the print size above — ready to slice/print as one piece."
+            : "Extrudes OSM building footprints (default ~9 m when unknown) onto a flat ground plane, no terrain — faster, network-lighter. Exported pre-scaled to the print size above."}
         </p>
+        {meshStatus.status === "success" && (
+          <p className="readout">
+            <span className="muted">
+              Exported {meshStatus.footprintMm} mm at scale {meshStatus.scale}.
+            </span>
+            {meshStatus.warnings && (
+              <>
+                <br />
+                <span className="status status-error">⚠ {meshStatus.warnings}</span>
+              </>
+            )}
+          </p>
+        )}
         {meshStatus.status === "error" && (
           <p className="status status-error">Error: {meshStatus.message}</p>
         )}

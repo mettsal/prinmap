@@ -18,6 +18,13 @@ class FabricStyle:
     building_fill: str  # individual building footprint
     water_fill: str  # water bodies (lakes, rivers, reservoirs)
     park_fill: str  # parks, woods, forests
+    # Outlines for water/parks. A crisp stroke keeps these regions legible even
+    # when their fill is a near-neighbour of block_fill (which was the "no water
+    # or parks visible" bug — fills alone weren't enough, especially in
+    # monochrome and in downscaled previews). See rendering/svg.py.
+    water_stroke: str
+    park_stroke: str
+    area_stroke_width: float  # px on the 1600px canvas
     # Pixel margin inside the SVG canvas.
     margin: float
 
@@ -30,9 +37,15 @@ PRESETS: dict[str, FabricStyle] = {
         background="#0d0d0f",
         road="#f5f5f5",
         block_fill="#3a3d47",
+        # Water/parks were near-black (#1e3a4a / #2f4033) and read as empty
+        # background — lifted to clearly legible teal/green (well above the grey
+        # block fill in luminance) plus a brighter outline.
         building_fill="#e8e9ee",
-        water_fill="#1e3a4a",
-        park_fill="#2f4033",
+        water_fill="#2f7a9c",
+        park_fill="#3f8a5f",
+        water_stroke="#7cc3e0",
+        park_stroke="#77c98f",
+        area_stroke_width=2.0,
         margin=48.0,
     ),
     # White background, black fill — the classic architectural figure-ground
@@ -44,8 +57,13 @@ PRESETS: dict[str, FabricStyle] = {
         road="#101010",
         block_fill="#c9c9c9",
         building_fill="#101010",
-        water_fill="#8a9aa5",
-        park_fill="#a8b0a0",
+        # Distinctly darker than the light block_fill (#c9c9c9) so the ground
+        # cover reads as its own mass, each delimited by a dark outline.
+        water_fill="#7f97a8",
+        park_fill="#94a888",
+        water_stroke="#3a4b57",
+        park_stroke="#3f4d38",
+        area_stroke_width=2.0,
         margin=48.0,
     ),
 }

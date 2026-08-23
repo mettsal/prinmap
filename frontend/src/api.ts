@@ -4,6 +4,7 @@ import type {
   GenerateParams,
   GenerateResponse,
   GeocodeResult,
+  MeshPrintInfo,
   StylePreset,
   TerrainParams,
 } from "./types";
@@ -43,12 +44,15 @@ export async function generateFabric(args: {
   return res.json();
 }
 
-/** Buildings-only 3D mesh export (STL) — a separate artifact from the SVG. */
+/** Buildings-only 3D mesh export (STL) — a separate artifact from the SVG.
+ * Returns the STL blob plus the print-scale facts the backend reports via
+ * `X-Print-*` headers (derived scale, physical footprint, printability
+ * warnings). */
 export async function generateMesh(
   selection: BBoxSelection,
   params: GenerateParams,
   terrain: TerrainParams,
-): Promise<Blob> {
+): Promise<{ blob: Blob; info: MeshPrintInfo }> {
   const res = await fetch(`${BASE}/generate/mesh`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -60,7 +64,13 @@ export async function generateMesh(
     }),
   });
   if (!res.ok) throw await toError(res);
-  return res.blob();
+  const info: MeshPrintInfo = {
+    scale: res.headers.get("X-Print-Scale") ?? "",
+    sizeMm: res.headers.get("X-Print-Size-Mm") ?? "",
+    footprintMm: res.headers.get("X-Print-Footprint-Mm") ?? "",
+    warnings: res.headers.get("X-Print-Warnings") ?? "",
+  };
+  return { blob: await res.blob(), info };
 }
 
 export async function geocode(query: string): Promise<GeocodeResult[]> {
