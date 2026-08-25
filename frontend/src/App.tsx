@@ -32,7 +32,16 @@ function downloadBlob(blob: Blob, filename: string) {
 export default function App() {
   const [mapPreset, setMapPreset] = useState<MapPreset>("dark");
   const [outputStyle, setOutputStyle] = useState<StylePreset>("dark-minimal");
-  const [features, setFeatures] = useState<FabricFeature[]>(["roads"]);
+  // Default to the full fabric so "Select + Generate" reproduces a complete map
+  // (roads + buildings + blocks + water + parks) out of the box — the earlier
+  // roads-only default was the trap that made water/parks look "missing".
+  const [features, setFeatures] = useState<FabricFeature[]>([
+    "roads",
+    "buildings",
+    "blocks",
+    "water",
+    "parks",
+  ]);
   const [selecting, setSelecting] = useState(false);
   const [selection, setSelection] = useState<BBoxSelection | null>(null);
   const [params, setParams] = useState<GenerateParams>({
@@ -46,6 +55,7 @@ export default function App() {
   const [terrainParams, setTerrainParams] = useState<TerrainParams>({
     include: true,
     resolution_m: 10,
+    max_grid_points_per_axis: 300,
     exaggeration: 1,
     street_style: "recessed",
     // Print scale (mm). Defaults tuned for a Bambu Lab A1 Mini (180 mm bed,

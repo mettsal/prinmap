@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import shapely
-from shapely.geometry import Polygon, box
+from shapely.geometry import LineString, Polygon, box
 from shapely.ops import unary_union
 
 from app.geometry.projection import projection_for
@@ -66,6 +66,17 @@ def test_grid_size_is_clamped():
     assert ny <= MAX_GRID_POINTS_PER_AXIS
 
 
+def test_max_grid_points_override_allows_finer_grid():
+    # A higher cap yields a denser grid (thin streets span more cells) — the
+    # user-facing "terrain detail" lever.
+    coarse = sample_elevation_grid(_frame_bounds(), PROJ, FakeElevationProvider(), resolution_m=0.01)
+    fine = sample_elevation_grid(
+        _frame_bounds(), PROJ, FakeElevationProvider(), resolution_m=0.01, max_grid_points_per_axis=600
+    )
+    assert fine.elevations.shape[0] > coarse.elevations.shape[0]
+    assert max(fine.elevations.shape) <= 600
+
+
 def test_building_base_z_seats_on_lowest_corner_and_clamps_to_floor():
     grid = sample_elevation_grid(
         _frame_bounds(), PROJ, FakeElevationProvider(base_elevation=50.0, slope_m_per_deg_lon=10000.0), resolution_m=50.0
@@ -126,9 +137,47 @@ def test_recessed_streets_are_lower_by_exact_depth():
     mid_y = (miny + maxy) / 2
     road = box(minx, mid_y - 15, maxx, mid_y + 15)
     treated = apply_surface_treatments(grid, road, EMPTY, EMPTY, street_style="recessed", street_recess_depth_m=0.6)
-    mask = _mask_of(grid, road)
-    assert np.allclose(treated.elevations[mask] - grid.elevations[mask], -0.6)
-    assert np.allclose(treated.elevations[~mask], grid.elevations[~mask])
+    delta = treated.elevations - grid.elevations
+    # Nodes inside the street reach the full channel depth; coverage weighting
+    # ramps the edges but never overshoots, and recessing never raises anything.
+    assert np.allclose(delta[_mask_of(grid, road)], -0.6)
+    assert delta.min() >= -0.6 - 1e-9
+    assert delta.max() <= 1e-9
+    # Far from the street (and its min-width buffer) nothing moves.
+    far = _mask_of(grid, box(minx, maxy - 100, maxx, maxy))
+    assert np.allclose(delta[far], 0.0)
+
+
+def test_raised_streets_are_higher_by_exact_depth():
+    grid = _flat_grid()
+    minx, miny, maxx, maxy = _frame_bounds()
+    mid_y = (miny + maxy) / 2
+    road = box(minx, mid_y - 15, maxx, mid_y + 15)
+    treated = apply_surface_treatments(grid, road, EMPTY, EMPTY, street_style="raised", street_recess_depth_m=0.6)
+    delta = treated.elevations - grid.elevations
+    # Mirror of recessed: interior reaches full height, edges ramp up, nothing sinks.
+    assert np.allclose(delta[_mask_of(grid, road)], 0.6)
+    assert delta.max() <= 0.6 + 1e-9
+    assert delta.min() >= -1e-9
+    far = _mask_of(grid, box(minx, maxy - 100, maxx, maxy))
+    assert np.allclose(delta[far], 0.0)
+
+
+def test_thin_diagonal_street_stays_continuous_not_staircased():
+    # Regression for the zig-zag bug: a street thinner than the grid spacing
+    # used to alias into a sparse, axis-aligned staircase of hit nodes (broken
+    # continuity). Widening to a minimum channel width + coverage weighting must
+    # now touch a *contiguous run of rows*, each with an affected node.
+    grid = _flat_grid()
+    minx, miny, maxx, maxy = _frame_bounds()
+    thin_road = LineString([(minx + 50, miny + 50), (maxx - 50, maxy - 50)]).buffer(1.5)  # ~3 m wide
+    binary_hits = int(_mask_of(grid, thin_road).sum())  # what the old node test would catch
+    treated = apply_surface_treatments(grid, thin_road, EMPTY, EMPTY, street_style="raised", street_recess_depth_m=0.6)
+    affected = (treated.elevations - grid.elevations) > 1e-9
+    assert affected.sum() > binary_hits  # the fix reaches far more nodes than a binary test
+    rows = np.where(affected.any(axis=1))[0]
+    assert rows.size > 0
+    assert np.array_equal(rows, np.arange(rows.min(), rows.max() + 1))  # no gap rows along the diagonal
 
 
 def test_textured_streets_stay_within_amplitude_range():
@@ -137,18 +186,18 @@ def test_textured_streets_stay_within_amplitude_range():
     mid_y = (miny + maxy) / 2
     road = box(minx, mid_y - 15, maxx, mid_y + 15)
     treated = apply_surface_treatments(grid, road, EMPTY, EMPTY, street_style="textured")
-    mask = _mask_of(grid, road)
-    diff = treated.elevations[mask] - grid.elevations[mask]
+    diff = treated.elevations - grid.elevations
     assert diff.min() >= 0.0
-    assert diff.max() == STREET_TEXTURE_AMPLITUDE_M
-    assert np.allclose(treated.elevations[~mask], grid.elevations[~mask])
+    assert np.isclose(diff.max(), STREET_TEXTURE_AMPLITUDE_M)
+    far = _mask_of(grid, box(minx, maxy - 100, maxx, maxy))
+    assert np.allclose(diff[far], 0.0)
 
 
 def test_park_texture_always_applies_regardless_of_street_style():
     grid = _flat_grid()
     minx, miny, maxx, maxy = _frame_bounds()
     park = box(minx + 20, miny + 20, minx + 120, miny + 120)
-    for style in ("recessed", "textured"):
+    for style in ("recessed", "raised", "textured"):
         treated = apply_surface_treatments(grid, EMPTY, EMPTY, park, street_style=style)
         mask = _mask_of(grid, park)
         diff = treated.elevations[mask] - grid.elevations[mask]

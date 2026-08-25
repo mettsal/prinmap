@@ -118,3 +118,25 @@ def test_full_layer_paint_order_all_five():
     root = ET.fromstring(svg)
     top_groups = [g.attrib.get("id") for g in root if g.tag.endswith("g")]
     assert top_groups == ["background", "blocks", "parks", "water", "buildings", "roads"]
+
+
+@pytest.mark.parametrize("preset", sorted(PRESETS))
+def test_full_render_actually_draws_water_and_parks(preset):
+    # The end-to-end regression the user hit: a full five-layer render must not
+    # just *contain* <g id="water"/parks"> but actually draw a non-empty,
+    # outlined path in each — otherwise the park/lagoon silently disappears from
+    # the map (as in examples/latest.svg) even with the layers enabled. Runs in
+    # BOTH presets so a monochrome-only regression can't slip through.
+    svg = _render(preset, features={"roads", "buildings", "blocks", "water", "parks"})
+    root = ET.fromstring(svg)
+    for group_id in ("water", "parks"):
+        group = next(
+            (g for g in root if g.tag.endswith("g") and g.attrib.get("id") == group_id),
+            None,
+        )
+        assert group is not None, f"{preset}: no <g id={group_id!r}> in full render"
+        path = next((p for p in group if p.tag.endswith("path")), None)
+        assert path is not None, f"{preset}/{group_id}: group has no <path>"
+        assert path.attrib.get("d"), f"{preset}/{group_id}: empty path data"
+        assert path.attrib.get("stroke"), f"{preset}/{group_id}: no outline stroke"
+        assert float(path.attrib.get("stroke-width", 0)) > 0

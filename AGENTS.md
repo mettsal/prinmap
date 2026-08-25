@@ -28,7 +28,7 @@ clip+union water/parks) → union → clip → normalize → render SVG`.
 3D pipeline: `select bbox → fetch OSM buildings → reproject to UTM → clip →
 resolve height (height tag > levels*3m > 9m default) → [if terrain.include]
 also fetch roads/water/parks → sample a DEM elevation grid over the frame →
-apply_surface_treatments (recess or texture streets, texture parks, flatten
+apply_surface_treatments (recess/raise/texture streets, texture parks, flatten
 water per-component — all as Z-value edits to the grid, never touching mesh
 topology) → build a watertight terrain solid from that treated grid (draped
 surface + flat base plinth) → seat each building's base_z on that
@@ -146,6 +146,18 @@ tests/               geometry / rendering / providers / api (OSM mocked — no n
   (verified via Euler characteristic) stays guaranteed "for free": only Z
   values change, never triangle connectivity. Any future surface treatment
   should follow this same pattern.
+- **Streets are anti-aliased and widened to a minimum channel width before
+  their recess/raise/texture is applied** (`terrain.py::apply_surface_treatments`
+  via `_coverage_weight` + a `road_area.buffer(STREET_MIN_HALF_WIDTH_CELLS *
+  spacing)`). Real streets (2.5-6 m) are thinner than the grid spacing (~10-17 m
+  after the density clamp), so the old binary point-in-polygon test at grid
+  nodes only caught a sparse, axis-aligned staircase of nodes — streets printed
+  as a **zig-zag** instead of a continuous line. The recess/raise depth is now
+  scaled by fractional per-node coverage (ramped edges, not whole-node snaps),
+  and every street is buffered to span ~2 cells so it stays continuous. Both are
+  still pure Z-edits, so watertightness is untouched. This over-widens the
+  thinnest streets slightly (a deliberate legibility tradeoff on a coarse grid);
+  raise `max_grid_points_per_axis` for a finer grid if fidelity matters more.
 - **Street/park texture pitch is tied to `resolution_m`** (grid-index-parity
   checkerboard/stripe patterns, one bump per grid cell) — at the default 10m
   spacing, once scaled to an 180mm print, this reads as ~1mm bumps. Texture
@@ -248,8 +260,12 @@ pytest                       # tests/conftest.py puts backend/ on sys.path
 - The 3D mesh endpoint (`/api/v1/generate/mesh`) is buildings-only and has its
   own lightweight request schema (`GenerateMeshRequest` — no `fabric`/`style`,
   plus a `terrain: TerrainParameters` block: `include` (default `true`),
-  `resolution_m`, `exaggeration`, `street_style` (`"recessed"|"textured"`,
-  default `"recessed"`), the print-scale block `print_size_mm` (default 150 —
+  `resolution_m`, `max_grid_points_per_axis` (default 300, grid-density cap —
+  raise for finer/more-continuous streets at more compute; UI "terrain detail"),
+  `exaggeration`, `street_style` (`"recessed"|"raised"|"textured"`, default
+  `"recessed"` — `"raised"` is the sign-mirror of `"recessed"`, embossing the
+  street channel above the surface instead of carving it below, reusing
+  `street_recess_depth_mm` as its height), the print-scale block `print_size_mm` (default 150 —
   leaves ~15 mm margin on the 180 mm A1 Mini bed; UI caps it at 180),
   `nozzle_diameter_mm`, `layer_height_mm`, and the printed-mm
   depths `base_thickness_mm`, `street_recess_depth_mm`,
@@ -267,9 +283,29 @@ pytest                       # tests/conftest.py puts backend/ on sys.path
 - Frontend: `Selection` is a discriminated union (`type: "bbox"` today).
   `GenerationState`/`MeshStatus` are tagged unions: idle | generating/exporting
   | success | error — always reflect them in the UI.
-- SVG uses semantic groups (`<g id="background">`, `<g id="blocks">`,
-  `<g id="buildings">`, `<g id="roads">` — only the requested/non-empty ones)
-  and carries enough metadata to recover the geographic bounds.
+- **Selection is always an equilateral square** (in ground metres), so the
+  projected frame is square and fills the square SVG/print canvas edge-to-edge.
+  `selection/selection.ts::squareBboxFromCorners(anchor, cursor)` snaps any drag
+  to a square anchored at `anchor` (side = larger extent). `map/MapView.tsx`
+  uses it both while drawing and for the 4 draggable corner handles
+  (`maplibregl.Marker` DOM elements, class `.sel-handle`): dragging a corner
+  re-squares against the diagonally-opposite (fixed) corner, hidden in draw mode
+  and the 3D preset. Dragging the selection's **interior** translates the whole
+  box (keeping its size) — a `selection-fill` layer mousedown sets `movingRef`,
+  the shared `mousemove`/`mouseup` handlers shift the bbox and commit
+  (`shiftBbox`), and the cursor turns to `move` on hover. Three drag modes share
+  the same handlers, gated by refs: draw (`dragStartRef`), resize
+  (`draggingHandleRef`), move (`movingRef`).
+- **Fabric layers default to all five** (`App.tsx`: roads, buildings, blocks,
+  water, parks) so "Select + Generate" reproduces a full map (e.g.
+  `examples/sao_paulo/ibirapuera_full.svg`) out of the box. A roads-only default
+  was the old trap that made water/parks look "missing" when they were simply
+  never requested — `process_fabric` only emits a `water`/`parks` group when
+  that feature is in the request AND the geometry is non-empty.
+- SVG uses semantic groups in paint order (`<g id="background">`, `blocks`,
+  `parks`, `water`, `buildings`, `roads` — only the requested/non-empty ones;
+  `parks`/`water` carry an outline stroke) and carries enough metadata to
+  recover the geographic bounds.
 - STL is a flat triangle list (no shared-solid concept) — multiple buildings in
   one file are fine as long as each building's own mesh is watertight
   (verified in tests via Euler characteristic: V - E + F == 2 - 2·genus).
@@ -293,9 +329,11 @@ buildings/water/parks (ways only, everywhere).
 ## Known gaps / next steps (don't silently "fix" — ask first, these are scoped)
 
 - **Terrain grid resolution is clamped** (`geometry/terrain.py::
-  MAX_GRID_POINTS_PER_AXIS = 300` per axis) regardless of the requested
+  MAX_GRID_POINTS_PER_AXIS = 300` is the default cap) regardless of the requested
   `terrain.resolution_m` — silently coarsens rather than erroring on a large
-  selection. Not currently surfaced in the API response metadata.
+  selection. The cap is now request-adjustable via `terrain.max_grid_points_per_axis`
+  (UI "terrain detail", 50-800) for finer streets; still not surfaced in the API
+  response metadata.
 - **Vertical exaggeration only scales terrain relief, not building heights**
   (`terrain.exaggeration` applied once at grid-sampling time,
   `terrain.py::sample_elevation_grid`) — a high exaggeration can look
@@ -328,8 +366,8 @@ toggle roads/buildings/block-interior/water/park layers → generate → see the
 SVG → switch between the two styles → tweak detail & road width → regenerate
 without reload → download the SVG → export a printable STL (buildings fused
 onto real terrain relief with a solid flat base; base thickness, vertical
-exaggeration, and street treatment — recessed channel or embossed texture —
-all adjustable; water flattened and parks/woods textured automatically
+exaggeration, terrain detail, and street treatment — recessed channel, raised
+ridge, or embossed texture — all adjustable; water flattened and parks/woods textured automatically
 whenever present; or a flat/no-terrain fast path) → look around a 3D preview
 (extruded buildings + terrain) in the browser. Results must derive from
 vector data, not a raster trace.

@@ -18,7 +18,7 @@ export type MapPreset = "dark" | "mono" | "3d";
 export type FabricFeature = "roads" | "buildings" | "blocks" | "water" | "parks";
 
 // How streets are differentiated on the (mono-material) printed terrain.
-export type StreetStyle = "recessed" | "textured";
+export type StreetStyle = "recessed" | "raised" | "textured";
 
 export type GenerationState =
   | { status: "idle" }
@@ -66,6 +66,7 @@ export type GenerateParams = {
 export type TerrainParams = {
   include: boolean;
   resolution_m: number;
+  max_grid_points_per_axis: number; // grid-density cap; higher = finer streets, more compute
   exaggeration: number; // vertical scale on relief only, not building heights
   street_style: StreetStyle;
   // Physical print scale (millimetres).

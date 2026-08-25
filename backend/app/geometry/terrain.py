@@ -30,9 +30,20 @@ BUILDING_SINK_M = 0.1
 
 # Surface-treatment constants (roads/water/parks — see apply_surface_treatments).
 WATER_SUBMERSION_M = 0.3  # water flattened, then sunk below its rim
-STREET_RECESS_DEPTH_M = 0.6  # "recessed" street mode: channel depth
+STREET_RECESS_DEPTH_M = 0.6  # "recessed"/"raised" street mode: channel depth (height)
 STREET_TEXTURE_AMPLITUDE_M = 0.15  # "textured" street mode: bump height
 PARK_TEXTURE_AMPLITUDE_M = 0.12  # park ground-texture bump height
+
+# Real streets (2.5-6 m wide) are far thinner than the terrain grid spacing
+# (~10-17 m after the MAX_GRID_POINTS_PER_AXIS clamp), so a binary point-in-
+# polygon test at grid nodes only catches a sparse, axis-aligned staircase of
+# nodes and the street prints as a zig-zag instead of a continuous line. Two
+# knobs fix that, both Z-only (topology untouched -> still watertight for free):
+# widen the road area so every street spans >= ~2 cells (continuity), and
+# supersample per node for fractional coverage so channel edges ramp smoothly
+# (anti-aliasing) instead of snapping whole nodes to full depth.
+STREET_MIN_HALF_WIDTH_CELLS = 0.75  # buffer roads out by this many grid cells per side
+STREET_COVERAGE_SUPERSAMPLES = 3  # n x n sub-node samples for anti-aliased channel edges
 
 
 @dataclass
@@ -69,13 +80,16 @@ def sample_elevation_grid(
     elevation_provider: ElevationProvider,
     resolution_m: float,
     exaggeration: float = 1.0,
+    max_grid_points_per_axis: int = MAX_GRID_POINTS_PER_AXIS,
 ) -> ElevationGrid:
     """Build a regular grid of elevation samples over the projected frame.
 
     Grid nodes are reprojected to WGS84 and batch-queried against
     `elevation_provider`. Silently coarsens (fewer points, larger effective
     spacing) rather than raising if `resolution_m` would exceed
-    `MAX_GRID_POINTS_PER_AXIS` on a large selection.
+    `max_grid_points_per_axis` on a large selection. A finer grid (higher cap)
+    lets thin features like streets span more cells; it costs proportionally
+    more elevation queries and terrain triangles.
 
     Elevations are normalized so the selection's lowest sampled point sits at
     z=0 *before* exaggeration is applied — real elevation-above-sea-level is
@@ -87,8 +101,8 @@ def sample_elevation_grid(
     width = max(maxx - minx, 1e-6)
     height = max(maxy - miny, 1e-6)
 
-    nx = int(np.clip(np.ceil(width / resolution_m) + 1, 2, MAX_GRID_POINTS_PER_AXIS))
-    ny = int(np.clip(np.ceil(height / resolution_m) + 1, 2, MAX_GRID_POINTS_PER_AXIS))
+    nx = int(np.clip(np.ceil(width / resolution_m) + 1, 2, max_grid_points_per_axis))
+    ny = int(np.clip(np.ceil(height / resolution_m) + 1, 2, max_grid_points_per_axis))
 
     xs = np.linspace(minx, maxx, nx)
     ys = np.linspace(miny, maxy, ny)
@@ -192,6 +206,24 @@ def _water_component_flat_z(polygon: Polygon, grid: ElevationGrid) -> float:
     return min(grid.sample_bilinear(x, y) for x, y in coords)
 
 
+def _coverage_weight(
+    geom: BaseGeometry, xr: np.ndarray, yr: np.ndarray, dx: float, dy: float, n: int
+) -> np.ndarray:
+    """Fractional coverage of each grid node's cell by `geom`, via an n x n
+    supersample of sub-node offsets. Anti-aliases a mask: a node whose cell is
+    ~half inside `geom` gets weight ~0.5 (a ramped edge) instead of snapping to
+    0 or 1, so a treatment applied as depth*weight no longer staircases across
+    the grid. Fully-covered interior nodes get exactly 1.0."""
+    if geom.is_empty:
+        return np.zeros(xr.shape)
+    offsets = (np.arange(n) + 0.5) / n - 0.5  # cell-centered fractional offsets in [-0.5, 0.5)
+    weight = np.zeros(xr.shape)
+    for ox in offsets:
+        for oy in offsets:
+            weight += shapely.contains_xy(geom, xr + ox * dx, yr + oy * dy)
+    return weight / (n * n)
+
+
 def _street_texture(
     x: np.ndarray, y: np.ndarray, grid: ElevationGrid, amplitude_m: float
 ) -> np.ndarray:
@@ -219,11 +251,12 @@ def apply_surface_treatments(
     road_area: BaseGeometry,
     water_area: BaseGeometry,
     park_area: BaseGeometry,
-    street_style: Literal["recessed", "textured"],
+    street_style: Literal["recessed", "raised", "textured"],
     street_recess_depth_m: float = STREET_RECESS_DEPTH_M,
     street_texture_amplitude_m: float = STREET_TEXTURE_AMPLITUDE_M,
     park_texture_amplitude_m: float = PARK_TEXTURE_AMPLITUDE_M,
     water_submersion_m: float = WATER_SUBMERSION_M,
+    street_min_half_width_cells: float = STREET_MIN_HALF_WIDTH_CELLS,
 ) -> ElevationGrid:
     """Mutate a *copy* of grid.elevations per node, based on which mask(s)
     contain that node — applied BEFORE build_terrain_mesh, never by touching
@@ -240,27 +273,49 @@ def apply_surface_treatments(
     Overlap priority: water > road > park — each node gets exactly one
     treatment (masks are made mutually exclusive before applying), not a
     stack of overlapping ones.
+
+    Roads are widened to a minimum channel width and applied with fractional
+    coverage (anti-aliased) rather than a binary node test, so thin/diagonal
+    streets stay continuous on a coarse grid instead of aliasing into a
+    zig-zag staircase — see the STREET_* constants above.
     """
     xx, yy = np.meshgrid(grid.xs, grid.ys)
     xr, yr = xx.ravel(), yy.ravel()
     zr = grid.elevations.ravel().copy()
 
-    road_mask = _contains_mask(road_area, xr, yr)
-    water_mask = _contains_mask(water_area, xr, yr)
-    park_mask = _contains_mask(park_area, xr, yr)
+    dx = float(grid.xs[1] - grid.xs[0]) if grid.xs.size > 1 else 1.0
+    dy = float(grid.ys[1] - grid.ys[0]) if grid.ys.size > 1 else 1.0
+    spacing = max(dx, dy)
 
-    road_only = road_mask & ~water_mask
-    park_only = park_mask & ~road_mask & ~water_mask
+    water_mask = _contains_mask(water_area, xr, yr)
+
+    # Roads -> a fractional coverage weight over a widened channel, not a binary
+    # node hit. Water outranks roads, so zero the weight under water.
+    road_weight = np.zeros(xr.shape)
+    if not road_area.is_empty:
+        road_wide = road_area.buffer(street_min_half_width_cells * spacing)
+        road_weight = _coverage_weight(road_wide, xr, yr, dx, dy, STREET_COVERAGE_SUPERSAMPLES)
+        road_weight[water_mask] = 0.0
+    road_hit = road_weight > 0.0
+
+    park_mask = _contains_mask(park_area, xr, yr)
+    park_only = park_mask & ~road_hit & ~water_mask
 
     if park_only.any():
         zr[park_only] += _park_texture(xr[park_only], yr[park_only], grid, park_texture_amplitude_m)
 
-    if road_only.any():
+    if road_hit.any():
+        w = road_weight[road_hit]
         if street_style == "recessed":
-            zr[road_only] -= street_recess_depth_m
+            zr[road_hit] -= street_recess_depth_m * w
+        elif street_style == "raised":
+            # Mirror of "recessed": lift the street channel above the local
+            # surface by the same magnitude instead of carving below it, so
+            # the road network reads as raised ridges following the slope.
+            zr[road_hit] += street_recess_depth_m * w
         else:
-            zr[road_only] += _street_texture(
-                xr[road_only], yr[road_only], grid, street_texture_amplitude_m
+            zr[road_hit] += (
+                _street_texture(xr[road_hit], yr[road_hit], grid, street_texture_amplitude_m) * w
             )
 
     # Flatten per connected water component (not one global min-of-boundary

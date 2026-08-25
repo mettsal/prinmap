@@ -2,7 +2,10 @@ import { useEffect, useRef } from "react";
 import maplibregl from "maplibre-gl";
 import type { MapMouseEvent } from "maplibre-gl";
 import { getMapStyle, TERRAIN_SOURCE_ID, TERRAIN_TILE_URL } from "./mapStyles";
-import { bboxFromCorners, bboxToFeatureCollection } from "../selection/selection";
+import {
+  bboxToFeatureCollection,
+  squareBboxFromCorners,
+} from "../selection/selection";
 import type { BBoxSelection, MapPreset } from "../types";
 
 type FlyTarget =
@@ -34,11 +37,25 @@ export default function MapView({
   const selectingRef = useRef(selecting);
   const onChangeRef = useRef(onSelectionChange);
   const selectionRef = useRef(selection);
+  const presetRef = useRef(preset);
   const dragStartRef = useRef<maplibregl.LngLat | null>(null);
+
+  // Corner resize handles (DOM markers). One per bbox corner, fixed order
+  // SW/SE/NE/NW; the diagonally-opposite corner is (i+2)%4.
+  const handlesRef = useRef<maplibregl.Marker[]>([]);
+  const handlesVisibleRef = useRef(false);
+  const draggingHandleRef = useRef(false);
+  const dragOppositeRef = useRef<maplibregl.LngLat | null>(null);
+
+  // Moving the whole selection by dragging its interior (translate, keep size).
+  const movingRef = useRef(false);
+  const moveLastRef = useRef<maplibregl.LngLat | null>(null);
+  const movedBboxRef = useRef<BBoxSelection | null>(null);
 
   selectingRef.current = selecting;
   onChangeRef.current = onSelectionChange;
   selectionRef.current = selection;
+  presetRef.current = preset;
 
   // Add the selection source/layers; safe to call repeatedly (e.g. after setStyle).
   function ensureSelectionLayers(map: maplibregl.Map) {
@@ -65,6 +82,88 @@ export default function MapView({
     const map = mapRef.current;
     const src = map?.getSource(SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
     if (src) src.setData(bboxToFeatureCollection(bbox) as never);
+  }
+
+  // Translate a bbox by (dLng, dLat), preserving its size.
+  function shiftBbox(b: BBoxSelection, dLng: number, dLat: number): BBoxSelection {
+    return {
+      type: "bbox",
+      west: b.west + dLng,
+      east: b.east + dLng,
+      south: b.south + dLat,
+      north: b.north + dLat,
+    };
+  }
+
+  // Corners in a fixed order: SW, SE, NE, NW. Opposite corner is (i+2)%4.
+  function cornersOf(b: BBoxSelection): maplibregl.LngLat[] {
+    return [
+      new maplibregl.LngLat(b.west, b.south),
+      new maplibregl.LngLat(b.east, b.south),
+      new maplibregl.LngLat(b.east, b.north),
+      new maplibregl.LngLat(b.west, b.north),
+    ];
+  }
+
+  // Lazily create the 4 draggable corner handles (once). Dragging a corner keeps
+  // the box square, anchored at the diagonally-opposite (fixed) corner.
+  function ensureHandles() {
+    if (handlesRef.current.length) return;
+    for (let i = 0; i < 4; i++) {
+      const el = document.createElement("div");
+      el.className = "sel-handle";
+      const marker = new maplibregl.Marker({ element: el, draggable: true });
+      marker.on("dragstart", () => {
+        const sel = selectionRef.current;
+        if (!sel) return;
+        draggingHandleRef.current = true;
+        dragOppositeRef.current = cornersOf(sel)[(i + 2) % 4];
+      });
+      marker.on("drag", () => {
+        const opposite = dragOppositeRef.current;
+        if (!opposite) return;
+        const box = squareBboxFromCorners(opposite, marker.getLngLat());
+        setSelectionData(box);
+        // Keep the other three handles glued to the live square; leave the one
+        // under the cursor to maplibre so the drag stays smooth.
+        const cs = cornersOf(box);
+        handlesRef.current.forEach((m, j) => {
+          if (j !== i) m.setLngLat(cs[j]);
+        });
+      });
+      marker.on("dragend", () => {
+        const opposite = dragOppositeRef.current;
+        dragOppositeRef.current = null;
+        draggingHandleRef.current = false;
+        if (!opposite) return;
+        // Commit; the [selection] effect re-syncs every handle to the snapped box.
+        onChangeRef.current(squareBboxFromCorners(opposite, marker.getLngLat()));
+      });
+      handlesRef.current.push(marker);
+    }
+  }
+
+  // Show handles only for a committed selection outside draw mode and the 3D
+  // preset; otherwise hide them. Skipped mid-drag so we never fight the marker.
+  function syncHandles() {
+    const map = mapRef.current;
+    if (!map || draggingHandleRef.current || movingRef.current) return;
+    const sel = selectionRef.current;
+    const show = !!sel && !selectingRef.current && presetRef.current !== "3d";
+    if (!show) {
+      if (handlesVisibleRef.current) {
+        handlesRef.current.forEach((m) => m.remove());
+        handlesVisibleRef.current = false;
+      }
+      return;
+    }
+    ensureHandles();
+    const cs = cornersOf(sel!);
+    handlesRef.current.forEach((m, j) => {
+      m.setLngLat(cs[j]);
+      if (!handlesVisibleRef.current) m.addTo(map);
+    });
+    handlesVisibleRef.current = true;
   }
 
   // Drape terrain relief under the 3D preview (the "liberty" style already
@@ -95,7 +194,10 @@ export default function MapView({
     mapRef.current = map;
     map.addControl(new maplibregl.NavigationControl(), "top-right");
 
-    map.on("load", () => ensureSelectionLayers(map));
+    map.on("load", () => {
+      ensureSelectionLayers(map);
+      syncHandles();
+    });
     // setStyle() wipes custom layers — re-add them whenever the style reloads.
     map.on("styledata", () => {
       ensureSelectionLayers(map);
@@ -109,21 +211,66 @@ export default function MapView({
       dragStartRef.current = e.lngLat;
     };
     const onMove = (e: MapMouseEvent) => {
+      // Moving the whole box (interior drag) wins over drawing/idle.
+      if (movingRef.current && moveLastRef.current && movedBboxRef.current) {
+        const dLng = e.lngLat.lng - moveLastRef.current.lng;
+        const dLat = e.lngLat.lat - moveLastRef.current.lat;
+        moveLastRef.current = e.lngLat;
+        const box = shiftBbox(movedBboxRef.current, dLng, dLat);
+        movedBboxRef.current = box;
+        setSelectionData(box);
+        const cs = cornersOf(box);
+        handlesRef.current.forEach((m, j) => m.setLngLat(cs[j]));
+        return;
+      }
       if (!dragStartRef.current) return;
-      setSelectionData(bboxFromCorners(dragStartRef.current, e.lngLat));
+      setSelectionData(squareBboxFromCorners(dragStartRef.current, e.lngLat));
     };
-    const onUp = (e: MapMouseEvent) => {
+    const onUp = () => {
+      if (movingRef.current) {
+        movingRef.current = false;
+        moveLastRef.current = null;
+        map.dragPan.enable();
+        if (movedBboxRef.current) onChangeRef.current(movedBboxRef.current);
+        return;
+      }
+    };
+    const onUpDraw = (e: MapMouseEvent) => {
       if (!dragStartRef.current) return;
-      const bbox = bboxFromCorners(dragStartRef.current, e.lngLat);
+      const bbox = squareBboxFromCorners(dragStartRef.current, e.lngLat);
       dragStartRef.current = null;
       map.dragPan.enable();
       onChangeRef.current(bbox);
     };
+    // Interior drag = translate the whole selection (like terraprinter). Only
+    // outside draw mode / the 3D preset; corner handles keep their own drag.
+    const onInteriorDown = (e: MapMouseEvent) => {
+      const sel = selectionRef.current;
+      if (selectingRef.current || !sel || presetRef.current === "3d") return;
+      e.preventDefault();
+      map.dragPan.disable();
+      movingRef.current = true;
+      moveLastRef.current = e.lngLat;
+      movedBboxRef.current = sel;
+    };
+    const setMoveCursor = () => {
+      if (!selectingRef.current) map.getCanvas().style.cursor = "move";
+    };
+    const clearMoveCursor = () => {
+      if (!selectingRef.current) map.getCanvas().style.cursor = "";
+    };
     map.on("mousedown", onDown);
+    map.on("mousedown", "selection-fill", onInteriorDown);
+    map.on("mouseenter", "selection-fill", setMoveCursor);
+    map.on("mouseleave", "selection-fill", clearMoveCursor);
     map.on("mousemove", onMove);
     map.on("mouseup", onUp);
+    map.on("mouseup", onUpDraw);
 
     return () => {
+      handlesRef.current.forEach((m) => m.remove());
+      handlesRef.current = [];
+      handlesVisibleRef.current = false;
       map.remove();
       mapRef.current = null;
     };
@@ -157,19 +304,22 @@ export default function MapView({
     } else {
       map.once("load", apply);
     }
+    syncHandles(); // hide handles in 3D, restore them in 2D
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preset]);
 
-  // Reflect externally-driven selection changes (e.g. Clear button).
+  // Reflect externally-driven selection changes (e.g. Clear button, resize commit).
   useEffect(() => {
     setSelectionData(selection);
+    syncHandles();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selection]);
 
-  // Crosshair cursor while in selection mode.
+  // Crosshair cursor while in selection mode; hide handles while drawing.
   useEffect(() => {
     const canvas = mapRef.current?.getCanvas();
     if (canvas) canvas.style.cursor = selecting ? "crosshair" : "";
+    syncHandles();
   }, [selecting]);
 
   // Fly to a geocoded location or fit a bbox.

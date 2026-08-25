@@ -265,6 +265,28 @@ export default function Controls(props: Props) {
             </label>
 
             <label className="slider">
+              Terrain detail{" "}
+              <span className="muted">{terrainParams.max_grid_points_per_axis} pts/axis</span>
+              <input
+                type="range"
+                min={100}
+                max={800}
+                step={50}
+                value={terrainParams.max_grid_points_per_axis}
+                onChange={(e) =>
+                  onTerrainParams({
+                    ...terrainParams,
+                    max_grid_points_per_axis: Number(e.target.value),
+                  })
+                }
+              />
+              <small className="muted">
+                Higher = finer, more continuous streets (slower). Streets are also
+                smoothed to a minimum channel width so they never zig-zag.
+              </small>
+            </label>
+
+            <label className="slider">
               Street treatment
               <select
                 value={terrainParams.street_style}
@@ -273,13 +295,14 @@ export default function Controls(props: Props) {
                 }
               >
                 <option value="recessed">Recessed (carved channel)</option>
+                <option value="raised">Raised (embossed ridge)</option>
                 <option value="textured">Textured (embossed surface)</option>
               </select>
             </label>
 
-            {terrainParams.street_style === "recessed" ? (
+            {terrainParams.street_style === "recessed" || terrainParams.street_style === "raised" ? (
               <label className="slider">
-                Street recess depth{" "}
+                {terrainParams.street_style === "raised" ? "Street raise height" : "Street recess depth"}{" "}
                 <span className="muted">{terrainParams.street_recess_depth_mm.toFixed(1)} mm</span>
                 <input
                   type="range"

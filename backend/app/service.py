@@ -236,6 +236,7 @@ def generate_mesh(
         elevation_provider,
         terrain.resolution_m,
         terrain.exaggeration,
+        max_grid_points_per_axis=terrain.max_grid_points_per_axis,
     )
     grid = apply_surface_treatments(
         grid,

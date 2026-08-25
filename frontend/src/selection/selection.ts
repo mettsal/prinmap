@@ -12,6 +12,38 @@ export function bboxFromCorners(a: LngLat, b: LngLat): BBoxSelection {
   };
 }
 
+/** Metres-per-degree at a latitude (equirectangular; same constants as
+ * bboxLongestEdgeM and the backend's projection reference). */
+function metresPerDegree(lat: number): { mLat: number; mLon: number } {
+  const rad = lat * (Math.PI / 180);
+  return { mLat: 110574, mLon: 111320 * Math.cos(rad) };
+}
+
+/** Build an equilateral-in-ground-metres bbox anchored at `anchor`, extending
+ * toward `cursor`. The side is the larger of the two dragged extents (so the
+ * square encloses the pointer), and it grows in the drag direction. Because the
+ * two sides span equal metres, the projected frame is (near-)square and fills
+ * the square SVG/print canvas edge-to-edge — matching examples/…/ibirapuera_full.svg. */
+export function squareBboxFromCorners(anchor: LngLat, cursor: LngLat): BBoxSelection {
+  const { mLat, mLon } = metresPerDegree(anchor.lat);
+  const dLon = cursor.lng - anchor.lng;
+  const dLat = cursor.lat - anchor.lat;
+  const widthM = Math.abs(dLon) * mLon;
+  const heightM = Math.abs(dLat) * mLat;
+  const side = Math.max(widthM, heightM);
+  const signLon = dLon >= 0 ? 1 : -1;
+  const signLat = dLat >= 0 ? 1 : -1;
+  const oppLon = anchor.lng + (signLon * side) / mLon;
+  const oppLat = anchor.lat + (signLat * side) / mLat;
+  return {
+    type: "bbox",
+    west: Math.min(anchor.lng, oppLon),
+    east: Math.max(anchor.lng, oppLon),
+    south: Math.min(anchor.lat, oppLat),
+    north: Math.max(anchor.lat, oppLat),
+  };
+}
+
 /** GeoJSON polygon for rendering the selection overlay on the map. */
 export function bboxToFeatureCollection(
   bbox: BBoxSelection | null,

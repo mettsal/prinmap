@@ -75,12 +75,17 @@ class TerrainParameters(BaseModel):
 
     include: bool = True
     resolution_m: float = 10.0  # elevation-grid spacing; may be silently coarsened, see geometry/terrain.py
+    # Hard cap on grid points per axis (bounds elevation-query volume + triangle
+    # count). Raising it lets thin streets span more cells (less zig-zag) at
+    # proportionally higher compute; the UI exposes this as "terrain detail".
+    max_grid_points_per_axis: int = Field(default=300, ge=50, le=800)
     exaggeration: float = 1.0  # vertical scale on terrain relief only (not building heights)
     # How streets are differentiated on the (mono-material) printed terrain:
-    # "recessed" carves a channel following the local slope; "textured" embosses
-    # a surface pattern at the same height. Water/parks always get their own
-    # fixed treatment (flattened / textured respectively) whenever present.
-    street_style: Literal["recessed", "textured"] = "recessed"
+    # "recessed" carves a channel below the local slope; "raised" lifts the same
+    # channel above it (embossed ridges); "textured" embosses a surface pattern
+    # at the same height. Water/parks always get their own fixed treatment
+    # (flattened / textured respectively) whenever present.
+    street_style: Literal["recessed", "raised", "textured"] = "recessed"
 
     # --- Physical print scale ------------------------------------------------
     # Target longest edge of the *printed* model, in millimetres. Bambu Lab A1
@@ -95,7 +100,7 @@ class TerrainParameters(BaseModel):
 
     # --- Depths/thicknesses in PRINTED millimetres ---------------------------
     base_thickness_mm: float = Field(default=3.0, gt=0)  # solid plinth below the lowest terrain point
-    street_recess_depth_mm: float = Field(default=0.6, ge=0)  # "recessed" mode channel depth
+    street_recess_depth_mm: float = Field(default=0.6, ge=0)  # "recessed"/"raised" channel depth (height)
     street_texture_amplitude_mm: float = Field(default=0.4, ge=0)  # "textured" mode bump height
     park_texture_amplitude_mm: float = Field(default=0.4, ge=0)  # park ground-texture bump height
     water_submersion_mm: float = Field(default=0.5, ge=0)  # water sunk below its rim
